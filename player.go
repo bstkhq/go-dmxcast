@@ -21,13 +21,13 @@ const (
 	MergeLTP
 )
 
-type EngineConfig struct {
+type PlayerConfig struct {
 	Mode          MergeMode
 	FlushInterval time.Duration
 }
 
-// Engine mixes multiple shows and outputs merged DMX through a Transport.
-type Engine struct {
+// Player mixes multiple shows and outputs merged DMX through a Transport.
+type Player struct {
 	tx Transport
 	u  *Universe
 
@@ -44,13 +44,13 @@ type Engine struct {
 
 const defaultFlushInterval = time.Second / 44
 
-func NewEngine(tx Transport, cfg EngineConfig) *Engine {
+func NewPlayer(tx Transport, cfg *PlayerConfig) *Player {
 	flush := cfg.FlushInterval
 	if flush <= 0 {
 		flush = defaultFlushInterval
 	}
 
-	e := &Engine{
+	e := &Player{
 		tx:            tx,
 		u:             NewUniverse(cfg.Mode),
 		players:       make(map[uint64]*showPlayer),
@@ -61,7 +61,7 @@ func NewEngine(tx Transport, cfg EngineConfig) *Engine {
 	return e
 }
 
-func (e *Engine) Close() error {
+func (e *Player) Close() error {
 	e.mu.Lock()
 	if e.closed {
 		e.mu.Unlock()
@@ -97,7 +97,7 @@ type PlayingShow struct {
 	Loop      bool
 }
 
-func (e *Engine) Play(ctx context.Context, show *olashow.OlaShow) ShowHandle {
+func (e *Player) Play(ctx context.Context, show *olashow.OlaShow) ShowHandle {
 	id := atomic.AddUint64(&e.nextID, 1)
 
 	p := &showPlayer{
@@ -124,7 +124,7 @@ func (e *Engine) Play(ctx context.Context, show *olashow.OlaShow) ShowHandle {
 	return ShowHandle{id: id}
 }
 
-func (e *Engine) Stop(h ShowHandle) {
+func (e *Player) Stop(h ShowHandle) {
 	e.mu.Lock()
 	p := e.players[h.id]
 	e.mu.Unlock()
@@ -134,7 +134,7 @@ func (e *Engine) Stop(h ShowHandle) {
 	}
 }
 
-func (e *Engine) IsPlaying(h ShowHandle) bool {
+func (e *Player) IsPlaying(h ShowHandle) bool {
 	e.mu.Lock()
 	p := e.players[h.id]
 	e.mu.Unlock()
@@ -142,7 +142,7 @@ func (e *Engine) IsPlaying(h ShowHandle) bool {
 	return p != nil && p.running.Load()
 }
 
-func (e *Engine) ListPlaying() []PlayingShow {
+func (e *Player) ListPlaying() []PlayingShow {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
@@ -159,9 +159,37 @@ func (e *Engine) ListPlaying() []PlayingShow {
 	return out
 }
 
+func (e *Player) onShowExit(p *showPlayer) {
+	e.mu.Lock()
+	delete(e.players, p.id)
+	e.mu.Unlock()
+
+	e.u.Remove(p.id)
+}
+
+func (e *Player) outputLoop() {
+	tick := time.NewTicker(e.flushInterval)
+	defer tick.Stop()
+
+	for {
+		e.mu.Lock()
+		closed := e.closed
+		e.mu.Unlock()
+
+		if closed {
+			return
+		}
+
+		dmx := e.u.Merge()
+		_ = e.tx.Send(dmx)
+
+		<-tick.C
+	}
+}
+
 type showPlayer struct {
 	id   uint64
-	e    *Engine
+	e    *Player
 	show *olashow.OlaShow
 
 	ctx context.Context
@@ -220,33 +248,5 @@ func (p *showPlayer) run() {
 		if !p.show.Loop {
 			return
 		}
-	}
-}
-
-func (e *Engine) onShowExit(p *showPlayer) {
-	e.mu.Lock()
-	delete(e.players, p.id)
-	e.mu.Unlock()
-
-	e.u.Remove(p.id)
-}
-
-func (e *Engine) outputLoop() {
-	tick := time.NewTicker(e.flushInterval)
-	defer tick.Stop()
-
-	for {
-		e.mu.Lock()
-		closed := e.closed
-		e.mu.Unlock()
-
-		if closed {
-			return
-		}
-
-		dmx := e.u.Merge()
-		_ = e.tx.Send(dmx)
-
-		<-tick.C
 	}
 }

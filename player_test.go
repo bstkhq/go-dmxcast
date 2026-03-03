@@ -76,9 +76,9 @@ func waitForAtLeastSends(t *testing.T, mt *mockTransport, n int, timeout time.Du
 	}, timeout, 1*time.Millisecond)
 }
 
-func TestEngine_PlayStopAndList(t *testing.T) {
+func TestPlayer_PlayStopAndList(t *testing.T) {
 	mt := &mockTransport{}
-	e := NewEngine(mt, EngineConfig{
+	e := NewPlayer(mt, &PlayerConfig{
 		Mode:          MergeHTP,
 		FlushInterval: 2 * time.Millisecond,
 	})
@@ -103,9 +103,9 @@ func TestEngine_PlayStopAndList(t *testing.T) {
 	}, 300*time.Millisecond, 1*time.Millisecond)
 }
 
-func TestEngine_IgnoresFrameUniverse_UsesEngineUniverse(t *testing.T) {
+func TestPlayer_IgnoresFrameUniverse_UsesEngineUniverse(t *testing.T) {
 	mt := &mockTransport{}
-	e := NewEngine(mt, EngineConfig{
+	e := NewPlayer(mt, &PlayerConfig{
 		Mode:          MergeHTP,
 		FlushInterval: 2 * time.Millisecond,
 	})
@@ -121,9 +121,9 @@ func TestEngine_IgnoresFrameUniverse_UsesEngineUniverse(t *testing.T) {
 	}, 300*time.Millisecond, 1*time.Millisecond)
 }
 
-func TestEngine_HTP_MaxAndFallback(t *testing.T) {
+func TestPlayer_HTP_MaxAndFallback(t *testing.T) {
 	mt := &mockTransport{}
-	e := NewEngine(mt, EngineConfig{
+	e := NewPlayer(mt, &PlayerConfig{
 		Mode:          MergeHTP,
 		FlushInterval: 2 * time.Millisecond,
 	})
@@ -158,9 +158,9 @@ func TestEngine_HTP_MaxAndFallback(t *testing.T) {
 	}, 800*time.Millisecond, 1*time.Millisecond)
 }
 
-func TestEngine_LTP_LastWriterWins(t *testing.T) {
+func TestPlayer_LTP_LastWriterWins(t *testing.T) {
 	mt := &mockTransport{}
-	e := NewEngine(mt, EngineConfig{
+	e := NewPlayer(mt, &PlayerConfig{
 		Mode:          MergeLTP,
 		FlushInterval: 2 * time.Millisecond,
 	})
@@ -191,9 +191,9 @@ func TestEngine_LTP_LastWriterWins(t *testing.T) {
 	}, 700*time.Millisecond, 1*time.Millisecond)
 }
 
-func TestEngine_StopRemovesContribution(t *testing.T) {
+func TestPlayer_StopRemovesContribution(t *testing.T) {
 	mt := &mockTransport{}
-	e := NewEngine(mt, EngineConfig{
+	e := NewPlayer(mt, &PlayerConfig{
 		Mode:          MergeHTP,
 		FlushInterval: 2 * time.Millisecond,
 	})
@@ -220,9 +220,9 @@ func TestEngine_StopRemovesContribution(t *testing.T) {
 	}, 700*time.Millisecond, 1*time.Millisecond)
 }
 
-func TestEngine_HTP_ExactMergedSequence(t *testing.T) {
+func TestPlayer_HTP_ExactMergedSequence(t *testing.T) {
 	mt := &mockTransport{}
-	e := NewEngine(mt, EngineConfig{
+	e := NewPlayer(mt, &PlayerConfig{
 		Mode:          MergeHTP,
 		FlushInterval: 1 * time.Millisecond,
 	})
