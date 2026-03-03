@@ -6,21 +6,13 @@ import (
 	"github.com/jsimonetti/go-artnet/packet"
 )
 
-type ArtNetUniverseMap func(universe uint16) (netID uint8, subUni uint8)
-
-func FixedArtNetMap(netID uint8, subUni uint8) ArtNetUniverseMap {
-	return func(uint16) (uint8, uint8) { return netID, subUni }
-}
-
 type ArtNetConfig struct {
 	// DstIP is the destination IP (unicast).
 	DstIP net.IP
-
 	// SrcIP is the optional local bind IP (nil = OS default).
-	SrcIP net.IP
-
-	// Map selects the Art-Net Net/SubUni for each universe.
-	Map ArtNetUniverseMap
+	SrcIP  net.IP
+	SubUni uint8
+	Net    uint8
 }
 
 type ArtNetTransport struct {
@@ -56,13 +48,11 @@ func NewArtNetTransport(cfg *ArtNetConfig) (*ArtNetTransport, error) {
 	}, nil
 }
 
-func (t *ArtNetTransport) Send(universe uint16, dmx [512]byte) error {
-	netID, subUni := t.cfg.Map(universe)
-
+func (t *ArtNetTransport) Send(dmx [512]byte) error {
 	pkt := &packet.ArtDMXPacket{
 		Sequence: t.seq,
-		SubUni:   subUni,
-		Net:      netID,
+		SubUni:   t.cfg.SubUni,
+		Net:      t.cfg.Net,
 		Data:     dmx,
 	}
 

@@ -29,13 +29,6 @@ func recvArtDMX(t *testing.T, c *net.UDPConn) packet.ArtDMXPacket {
 	return p
 }
 
-func TestFixedArtNetMap(t *testing.T) {
-	m := FixedArtNetMap(7, 204)
-	netID, subUni := m(1234)
-	require.Equal(t, uint8(7), netID)
-	require.Equal(t, uint8(204), subUni)
-}
-
 func TestArtNetTransport_Send_UsesMapAndSendsPacket(t *testing.T) {
 	rx := listenUDP1270(t)
 	defer rx.Close()
@@ -43,18 +36,9 @@ func TestArtNetTransport_Send_UsesMapAndSendsPacket(t *testing.T) {
 	txConn := listenUDP1270(t)
 	defer txConn.Close()
 
-	called := struct {
-		ok       bool
-		universe uint16
-	}{}
-
 	cfg := &ArtNetConfig{
-		DstIP: net.ParseIP("127.0.0.1"),
-		Map: func(u uint16) (uint8, uint8) {
-			called.ok = true
-			called.universe = u
-			return 0, 204
-		},
+		DstIP:  net.ParseIP("127.0.0.1"),
+		SubUni: 204,
 	}
 
 	dst := &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: rx.LocalAddr().(*net.UDPAddr).Port}
@@ -66,12 +50,9 @@ func TestArtNetTransport_Send_UsesMapAndSendsPacket(t *testing.T) {
 	dmx[2] = 3
 	dmx[511] = 255
 
-	require.NoError(t, tx.Send(42, dmx))
+	require.NoError(t, tx.Send(dmx))
 
 	p := recvArtDMX(t, rx)
-
-	require.True(t, called.ok)
-	require.Equal(t, uint16(42), called.universe)
 
 	require.Equal(t, uint8(1), p.Sequence)
 	require.Equal(t, uint8(204), p.SubUni)
@@ -87,8 +68,8 @@ func TestArtNetTransport_Sequence_WrapsSkippingZero(t *testing.T) {
 	defer txConn.Close()
 
 	cfg := &ArtNetConfig{
-		DstIP: net.ParseIP("127.0.0.1"),
-		Map:   FixedArtNetMap(0, 1),
+		DstIP:  net.ParseIP("127.0.0.1"),
+		SubUni: 204,
 	}
 
 	dst := &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: rx.LocalAddr().(*net.UDPAddr).Port}
@@ -102,7 +83,7 @@ func TestArtNetTransport_Sequence_WrapsSkippingZero(t *testing.T) {
 	var firstSeq, lastSeq uint8
 
 	for i := range 256 {
-		require.NoError(t, tx.Send(1, dmx))
+		require.NoError(t, tx.Send(dmx))
 		p := recvArtDMX(t, rx)
 		if i == 0 {
 			firstSeq = p.Sequence

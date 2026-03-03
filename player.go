@@ -15,14 +15,20 @@ type MergeMode int
 const (
 	// MergeHTP (Highest Takes Precedence) merges per channel using the maximum value.
 	MergeHTP MergeMode = iota
-
 	// MergeLTP (Latest Takes Precedence) merges per channel using the most recently
 	// updated value.
 	MergeLTP
 )
 
+// PlayerConfig configures a Player/Engine instance.
+//
+// Mode selects how multiple concurrent shows are merged (HTP or LTP).
+// FlushInterval controls the output refresh period.
 type PlayerConfig struct {
-	Mode          MergeMode
+	// Mode selects the merge method used when multiple shows are playing.
+	Mode MergeMode
+	// FlushInterval is the period between output frames.
+	// If zero, it defaults to 44 Hz (time.Second/44).
 	FlushInterval time.Duration
 }
 
@@ -44,6 +50,8 @@ type Player struct {
 
 const defaultFlushInterval = time.Second / 44
 
+// NewPlayer creates a Player that merges concurrent shows and sends the result
+// through tx.
 func NewPlayer(tx Transport, cfg *PlayerConfig) *Player {
 	flush := cfg.FlushInterval
 	if flush <= 0 {
