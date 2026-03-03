@@ -158,3 +158,77 @@ func assertShowSane(t *testing.T, show *OlaShow) {
 		require.GreaterOrEqualf(t, f.Delay, time.Duration(0), "frame %d delay", i)
 	}
 }
+
+func TestRead_Metadata_ParsesNameAndLoop(t *testing.T) {
+	in := strings.Join([]string{
+		"# name=My Show",
+		"# loop=true",
+		"OLA Show",
+		"1 1,2,3",
+		"10",
+		"",
+	}, "\n")
+
+	s, err := Read(strings.NewReader(in))
+	require.NoError(t, err)
+	require.Equal(t, "My Show", s.Name)
+	require.True(t, s.Loop)
+	require.Len(t, s.Frames, 1)
+	require.Equal(t, 10*time.Millisecond, s.Frames[0].Delay)
+}
+
+func TestRead_Metadata_UnknownKeyFails(t *testing.T) {
+	in := strings.Join([]string{
+		"# foo=bar",
+		"OLA Show",
+		"1 1,2,3",
+		"10",
+	}, "\n")
+
+	_, err := Read(strings.NewReader(in))
+	require.Error(t, err)
+}
+
+func TestRead_Metadata_NotAllowedInBodyFails(t *testing.T) {
+	in := strings.Join([]string{
+		"OLA Show",
+		"1 1,2,3",
+		"10",
+		"# name=Nope",
+	}, "\n")
+
+	_, err := Read(strings.NewReader(in))
+	require.Error(t, err)
+}
+
+func TestWrite_WritesMetadataAtTop(t *testing.T) {
+	show := &OlaShow{
+		Name: "Hello",
+		Loop: true,
+		Frames: []Frame{
+			func() Frame {
+				var f Frame
+				f.Universe = 1
+				f.Length = 3
+				f.Data[0] = 1
+				f.Data[1] = 2
+				f.Data[2] = 3
+				f.Delay = 10 * time.Millisecond
+				return f
+			}(),
+		},
+	}
+
+	var buf bytes.Buffer
+	require.NoError(t, Write(show, &buf))
+
+	out := buf.String()
+	require.True(t, strings.HasPrefix(out, "# name=Hello\n# loop=true\nOLA Show\n"))
+
+	// roundtrip preserves fields
+	got, err := Read(strings.NewReader(out))
+	require.NoError(t, err)
+	require.Equal(t, "Hello", got.Name)
+	require.True(t, got.Loop)
+	require.Len(t, got.Frames, 1)
+}

@@ -17,9 +17,6 @@ var (
 )
 
 // Frame is a DMX snapshot for a universe plus the delay to the next frame.
-//
-// Length is how many slots in Data are meaningful (0..512).
-// Delay is stored in the file as an integer number of milliseconds.
 type Frame struct {
 	Universe uint16
 	Data     [512]byte
@@ -29,6 +26,8 @@ type Frame struct {
 
 // OlaShow is a decoded OLA Show file.
 type OlaShow struct {
+	Name   string
+	Loop   bool
 	Frames []Frame
 }
 
@@ -43,6 +42,18 @@ func Open(filepath string) (*OlaShow, error) {
 }
 
 // Read parses an OLA Show file from r and loads it into memory.
+//
+// The format is plain text:
+//   - Optional leading metadata lines: "# key=value" (only "name" and "loop")
+//   - First non-empty non-metadata line: "OLA Show"
+//   - Then repeating pairs:
+//     "<universe> <dmx_csv>"
+//     "<delay_ms>"
+//
+// Notes:
+//   - Empty DMX CSV fields (",,") are treated as 0.
+//   - If the file ends right after a frame line, the last frame Delay is 0.
+//   - Lines starting with '#' are only allowed in the leading metadata block.
 func Read(r io.Reader) (*OlaShow, error) {
 	sc := bufio.NewScanner(r)
 
@@ -51,6 +62,7 @@ func Read(r io.Reader) (*OlaShow, error) {
 
 	lineNo := 0
 	seenHeader := false
+	seenNonMeta := false
 
 	expectDelay := false
 	var pending Frame
@@ -60,9 +72,27 @@ func Read(r io.Reader) (*OlaShow, error) {
 	for sc.Scan() {
 		lineNo++
 		line := strings.TrimSpace(sc.Text())
-		if line == "" || strings.HasPrefix(line, "#") {
+		if line == "" {
 			continue
 		}
+
+		if strings.HasPrefix(line, "#") {
+			if seenNonMeta {
+				return nil, fmt.Errorf("comments are only allowed at the beginning (line %d)", lineNo)
+			}
+
+			if seenHeader {
+				return nil, fmt.Errorf("comments are only allowed before header (line %d)", lineNo)
+			}
+
+			if err := parseMetaLine(show, line); err != nil {
+				return nil, fmt.Errorf("parse metadata line %d: %w", lineNo, err)
+			}
+
+			continue
+		}
+
+		seenNonMeta = true
 
 		if !seenHeader {
 			if line != "OLA Show" {
@@ -96,6 +126,7 @@ func Read(r io.Reader) (*OlaShow, error) {
 	if err := sc.Err(); err != nil {
 		return nil, err
 	}
+
 	if !seenHeader {
 		return nil, fmt.Errorf("%w (file ended before header)", ErrBadHeader)
 	}
@@ -110,11 +141,18 @@ func Read(r io.Reader) (*OlaShow, error) {
 
 // Write encodes show to w using the OLA Show text format.
 func Write(show *OlaShow, w io.Writer) error {
-	if show == nil {
-		return fmt.Errorf("show is nil")
-	}
-
 	bw := bufio.NewWriter(w)
+
+	if show.Name != "" {
+		if _, err := fmt.Fprintf(bw, "# name=%s\n", show.Name); err != nil {
+			return err
+		}
+	}
+	if show.Loop {
+		if _, err := bw.WriteString("# loop=true\n"); err != nil {
+			return err
+		}
+	}
 
 	if _, err := bw.WriteString("OLA Show\n"); err != nil {
 		return err
@@ -124,7 +162,6 @@ func Write(show *OlaShow, w io.Writer) error {
 		if f.Length < 0 || f.Length > 512 {
 			return fmt.Errorf("frame %d: invalid Length %d (must be 0..512)", i, f.Length)
 		}
-
 		delayMs := f.Delay.Milliseconds()
 		if delayMs < 0 {
 			return fmt.Errorf("frame %d: negative Delay %v", i, f.Delay)
@@ -139,6 +176,34 @@ func Write(show *OlaShow, w io.Writer) error {
 	}
 
 	return bw.Flush()
+}
+
+func parseMetaLine(show *OlaShow, line string) error {
+	s := strings.TrimSpace(strings.TrimPrefix(line, "#"))
+	if s == "" {
+		return fmt.Errorf("empty metadata line")
+	}
+	k, v, ok := strings.Cut(s, "=")
+	if !ok {
+		return fmt.Errorf("expected # key=value")
+	}
+	k = strings.TrimSpace(k)
+	v = strings.TrimSpace(v)
+
+	switch k {
+	case "loop":
+		b, err := strconv.ParseBool(v)
+		if err != nil {
+			return fmt.Errorf("invalid loop value %q", v)
+		}
+		show.Loop = b
+		return nil
+	case "name":
+		show.Name = v
+		return nil
+	default:
+		return fmt.Errorf("unknown variable %q", k)
+	}
 }
 
 func writeFrameLine(w io.Writer, f Frame) error {
