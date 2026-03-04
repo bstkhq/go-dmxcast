@@ -107,7 +107,6 @@ func main() {
 	e.HidePort = true
 
 	http.NewShowController(lib).RegisterRoutes(e.Group("/show"), nil)
-	http.NewProgController(lib).RegisterRoutes(e.Group("/prog"), nil)
 
 	fmt.Println("  Routes:")
 	fmt.Println("    GET  /show")
