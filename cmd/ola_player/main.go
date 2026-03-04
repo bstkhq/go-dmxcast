@@ -56,7 +56,7 @@ func main() {
 		netID  = flag.Int("net", 0, "Art-Net Net (0..127)")
 		subUni = flag.Int("subuni", 0, "Art-Net SubUni (0..255)")
 
-		loop = flag.Bool("loop", false, "Force loop playback (overrides show metadata)")
+		loop = flag.Int("loop", 0, "Force loop playback (overrides show metadata)")
 		once = flag.Bool("once", false, "Force play once (overrides show metadata)")
 
 		modeStr = flag.String("mode", "htp", "Merge mode: htp or ltp")
@@ -83,7 +83,7 @@ func main() {
 		flag.Usage()
 		os.Exit(2)
 	}
-	if *loop && *once {
+	if *loop != -1 && *once {
 		fmt.Fprintln(os.Stderr, "Use only one of -loop or -once")
 		os.Exit(2)
 	}
@@ -146,12 +146,12 @@ func main() {
 			os.Exit(1)
 		}
 
-		// Overrides
-		if *loop {
-			s.Loop = true
+		if *loop != 0 {
+			s.Loop = *loop
 		}
+
 		if *once {
-			s.Loop = false
+			s.Loop = 0
 		}
 
 		loaded = append(loaded, loadedShow{path: path, show: s})
