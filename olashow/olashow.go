@@ -1,3 +1,4 @@
+// olashow.go
 package olashow
 
 import (
@@ -26,9 +27,12 @@ type Frame struct {
 
 // OlaShow is a decoded OLA Show file.
 type OlaShow struct {
-	Name   string
-	Loop   bool
-	Frames []Frame
+	Name string
+	// Loop times; if -1 it's infinite.
+	Loop int
+	// Exclusive indicates the show should take exclusive control (header metadata).
+	Exclusive bool
+	Frames    []Frame
 }
 
 // Open reads an OLA Show file from disk.
@@ -43,9 +47,18 @@ func Open(filepath string) (*OlaShow, error) {
 
 // Read parses an OLA Show file from r and loads it into memory.
 //
-// The format is plain text:
-//   - Optional leading metadata lines: "# key=value" (only "name" and "loop")
-//   - First non-empty non-metadata line: "OLA Show"
+// Optional leading metadata lines are supported (only at the beginning, as a
+// consecutive block with no blank lines inside):
+//
+//	# name=<string>
+//	# loop=<bool|int>   (true => -1, false => 0, int => that value)
+//	# exclusive=<bool>
+//
+// If any metadata line is present, the next line after the metadata block must
+// be "OLA Show". Lines starting with '#' are not allowed elsewhere.
+//
+// The show body is plain text:
+//   - "OLA Show"
 //   - Then repeating pairs:
 //     "<universe> <dmx_csv>"
 //     "<delay_ms>"
@@ -53,21 +66,24 @@ func Open(filepath string) (*OlaShow, error) {
 // Notes:
 //   - Empty DMX CSV fields (",,") are treated as 0.
 //   - If the file ends right after a frame line, the last frame Delay is 0.
-//   - Lines starting with '#' are only allowed in the leading metadata block.
 func Read(r io.Reader) (*OlaShow, error) {
 	sc := bufio.NewScanner(r)
 
 	buf := make([]byte, 0, 16*1024)
 	sc.Buffer(buf, 2*1024*1024)
 
-	lineNo := 0
-	seenHeader := false
-	seenNonMeta := false
+	show := &OlaShow{Frames: make([]Frame, 0, 256)}
+
+	lineNo, ok, err := readMetaBlock(sc, show)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return nil, fmt.Errorf("%w (file ended before header)", ErrBadHeader)
+	}
 
 	expectDelay := false
 	var pending Frame
-
-	show := &OlaShow{Frames: make([]Frame, 0, 256)}
 
 	for sc.Scan() {
 		lineNo++
@@ -75,31 +91,8 @@ func Read(r io.Reader) (*OlaShow, error) {
 		if line == "" {
 			continue
 		}
-
 		if strings.HasPrefix(line, "#") {
-			if seenNonMeta {
-				return nil, fmt.Errorf("comments are only allowed at the beginning (line %d)", lineNo)
-			}
-
-			if seenHeader {
-				return nil, fmt.Errorf("comments are only allowed before header (line %d)", lineNo)
-			}
-
-			if err := parseMetaLine(show, line); err != nil {
-				return nil, fmt.Errorf("parse metadata line %d: %w", lineNo, err)
-			}
-
-			continue
-		}
-
-		seenNonMeta = true
-
-		if !seenHeader {
-			if line != "OLA Show" {
-				return nil, fmt.Errorf("%w (line %d: %q)", ErrBadHeader, lineNo, line)
-			}
-			seenHeader = true
-			continue
+			return nil, fmt.Errorf("comments are only allowed at the beginning (line %d)", lineNo)
 		}
 
 		if !expectDelay {
@@ -127,10 +120,6 @@ func Read(r io.Reader) (*OlaShow, error) {
 		return nil, err
 	}
 
-	if !seenHeader {
-		return nil, fmt.Errorf("%w (file ended before header)", ErrBadHeader)
-	}
-
 	if expectDelay {
 		pending.Delay = 0
 		show.Frames = append(show.Frames, pending)
@@ -148,8 +137,19 @@ func Write(show *OlaShow, w io.Writer) error {
 			return err
 		}
 	}
-	if show.Loop {
+
+	if show.Loop == -1 {
 		if _, err := bw.WriteString("# loop=true\n"); err != nil {
+			return err
+		}
+	} else if show.Loop != 0 {
+		if _, err := fmt.Fprintf(bw, "# loop=%d\n", show.Loop); err != nil {
+			return err
+		}
+	}
+
+	if show.Exclusive {
+		if _, err := bw.WriteString("# exclusive=true\n"); err != nil {
 			return err
 		}
 	}
@@ -178,11 +178,71 @@ func Write(show *OlaShow, w io.Writer) error {
 	return bw.Flush()
 }
 
+// readMetaBlock reads an optional consecutive metadata block at the beginning.
+// If a metadata line is present, the next line after the block must be "OLA Show".
+// No blank lines are allowed inside the block.
+func readMetaBlock(sc *bufio.Scanner, show *OlaShow) (lineNo int, headerRead bool, err error) {
+	// Skip leading empty lines.
+	for sc.Scan() {
+		lineNo++
+		line := strings.TrimSpace(sc.Text())
+		if line == "" {
+			continue
+		}
+
+		// No metadata block: first non-empty line must be header.
+		if !strings.HasPrefix(line, "#") {
+			if line != "OLA Show" {
+				return lineNo, false, fmt.Errorf("%w (line %d: %q)", ErrBadHeader, lineNo, line)
+			}
+			return lineNo, true, nil
+		}
+
+		// Metadata block (must be consecutive).
+		for {
+			if err := parseMetaLine(show, line); err != nil {
+				return lineNo, false, fmt.Errorf("parse metadata line %d: %w", lineNo, err)
+			}
+
+			if !sc.Scan() {
+				if sc.Err() != nil {
+					return lineNo, false, sc.Err()
+				}
+				return lineNo, false, fmt.Errorf("%w (file ended before header)", ErrBadHeader)
+			}
+
+			lineNo++
+			line = strings.TrimSpace(sc.Text())
+
+			// No blank lines inside metadata block.
+			if line == "" {
+				return lineNo, false, fmt.Errorf("metadata block must be consecutive (empty line at %d)", lineNo)
+			}
+
+			if strings.HasPrefix(line, "#") {
+				continue
+			}
+
+			// End of metadata block: must be exact header.
+			if line != "OLA Show" {
+				return lineNo, false, fmt.Errorf("%w (line %d: %q)", ErrBadHeader, lineNo, line)
+			}
+			return lineNo, true, nil
+		}
+	}
+
+	if sc.Err() != nil {
+		return lineNo, false, sc.Err()
+	}
+	return lineNo, false, fmt.Errorf("%w (file ended before header)", ErrBadHeader)
+}
+
 func parseMetaLine(show *OlaShow, line string) error {
 	s := strings.TrimSpace(strings.TrimPrefix(line, "#"))
 	if s == "" {
 		return fmt.Errorf("empty metadata line")
 	}
+
 	k, v, ok := strings.Cut(s, "=")
 	if !ok {
 		return fmt.Errorf("expected # key=value")
@@ -191,16 +251,35 @@ func parseMetaLine(show *OlaShow, line string) error {
 	v = strings.TrimSpace(v)
 
 	switch k {
-	case "loop":
-		b, err := strconv.ParseBool(v)
-		if err != nil {
-			return fmt.Errorf("invalid loop value %q", v)
-		}
-		show.Loop = b
-		return nil
 	case "name":
 		show.Name = v
 		return nil
+
+	case "loop":
+		// bool or int
+		if b, err := strconv.ParseBool(v); err == nil {
+			if b {
+				show.Loop = -1
+			} else {
+				show.Loop = 0
+			}
+			return nil
+		}
+		n, err := strconv.Atoi(v)
+		if err != nil {
+			return fmt.Errorf("invalid loop value %q", v)
+		}
+		show.Loop = n
+		return nil
+
+	case "exclusive":
+		b, err := strconv.ParseBool(v)
+		if err != nil {
+			return fmt.Errorf("invalid exclusive value %q", v)
+		}
+		show.Exclusive = b
+		return nil
+
 	default:
 		return fmt.Errorf("unknown variable %q", k)
 	}
