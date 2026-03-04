@@ -1,8 +1,9 @@
-// olashow_test.go
 package olashow
 
 import (
 	"bytes"
+	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -39,7 +40,6 @@ func assertShowSane(t *testing.T, show *OlaShow) {
 }
 
 func TestOLA_Fixtures_AllVerifyFilesParse(t *testing.T) {
-	// These are the exact files used by OLA's examples/RecorderVerifyTest.sh
 	fixtures := []string{
 		"dos_line_endings",
 		"multiple_unis",
@@ -52,14 +52,14 @@ func TestOLA_Fixtures_AllVerifyFilesParse(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			b := readFixture(t, name)
 
-			show, err := Read(bytes.NewReader(b))
+			show, err := Read(bytes.NewReader(b), nil)
 			require.NoError(t, err, "fixture should be valid according to ola_recorder --verify")
 			assertShowSane(t, show)
 
 			var out bytes.Buffer
 			require.NoError(t, Write(show, &out))
 
-			show2, err := Read(bytes.NewReader(out.Bytes()))
+			show2, err := Read(bytes.NewReader(out.Bytes()), nil)
 			require.NoError(t, err)
 			assertShowSane(t, show2)
 
@@ -95,7 +95,7 @@ func TestRead_Metadata_Block_ParsesNameLoopExclusive(t *testing.T) {
 		"10",
 	}, "\n")
 
-	s, err := Read(strings.NewReader(in))
+	s, err := Read(strings.NewReader(in), nil)
 	require.NoError(t, err)
 	require.Equal(t, "My Show", s.Name)
 	require.Equal(t, -1, s.Loop)
@@ -112,7 +112,7 @@ func TestRead_Metadata_LoopBoolFalseIsZero(t *testing.T) {
 		"0",
 	}, "\n")
 
-	s, err := Read(strings.NewReader(in))
+	s, err := Read(strings.NewReader(in), nil)
 	require.NoError(t, err)
 	require.Equal(t, 0, s.Loop)
 }
@@ -125,7 +125,7 @@ func TestRead_Metadata_LoopInt(t *testing.T) {
 		"0",
 	}, "\n")
 
-	s, err := Read(strings.NewReader(in))
+	s, err := Read(strings.NewReader(in), nil)
 	require.NoError(t, err)
 	require.Equal(t, 3, s.Loop)
 }
@@ -138,7 +138,7 @@ func TestRead_Metadata_UnknownKeyFails(t *testing.T) {
 		"0",
 	}, "\n")
 
-	_, err := Read(strings.NewReader(in))
+	_, err := Read(strings.NewReader(in), nil)
 	require.Error(t, err)
 }
 
@@ -152,7 +152,7 @@ func TestRead_Metadata_BlockMustBeConsecutive_EmptyLineFails(t *testing.T) {
 		"0",
 	}, "\n")
 
-	_, err := Read(strings.NewReader(in))
+	_, err := Read(strings.NewReader(in), nil)
 	require.Error(t, err)
 }
 
@@ -165,7 +165,7 @@ func TestRead_Metadata_MustBeImmediatelyFollowedByHeader(t *testing.T) {
 		"0",
 	}, "\n")
 
-	_, err := Read(strings.NewReader(in))
+	_, err := Read(strings.NewReader(in), nil)
 	require.Error(t, err)
 }
 
@@ -177,7 +177,7 @@ func TestRead_Metadata_NotAllowedAfterHeaderFails(t *testing.T) {
 		"# name=Nope",
 	}, "\n")
 
-	_, err := Read(strings.NewReader(in))
+	_, err := Read(strings.NewReader(in), nil)
 	require.Error(t, err)
 }
 
@@ -206,8 +206,7 @@ func TestWrite_Metadata_FormatsLoopAndExclusive(t *testing.T) {
 
 	require.True(t, strings.HasPrefix(out, "# name=Hello\n# loop=true\n# exclusive=true\nOLA Show\n"))
 
-	// Roundtrip preserves fields.
-	got, err := Read(strings.NewReader(out))
+	got, err := Read(strings.NewReader(out), nil)
 	require.NoError(t, err)
 	require.Equal(t, "Hello", got.Name)
 	require.Equal(t, -1, got.Loop)
@@ -237,4 +236,177 @@ func TestWrite_Metadata_LoopInt(t *testing.T) {
 
 	require.Contains(t, out, "# loop=5\n")
 	require.Contains(t, out, "OLA Show\n")
+}
+
+type memResolver struct {
+	files    map[string]string
+	seen     map[string]bool
+	metadata string
+}
+
+func (r *memResolver) Open(file string) (io.ReadCloser, error) {
+	if r.seen == nil {
+		r.seen = map[string]bool{}
+	}
+	if r.seen[file] {
+		return nil, fmt.Errorf("cyclic include %q", file)
+	}
+	r.seen[file] = true
+
+	s, ok := r.files[file]
+	if !ok {
+		return nil, os.ErrNotExist
+	}
+
+	return io.NopCloser(strings.NewReader(s)), nil
+}
+
+func (r *memResolver) Metadata() (io.ReadCloser, error) {
+	if r.metadata == "" {
+		return nil, fmt.Errorf("no metadata")
+	}
+
+	return io.NopCloser(strings.NewReader(r.metadata)), nil
+}
+
+func (r *memResolver) FileResolver(name string) FileResolver {
+	nr := NewDefaultResolver(name)
+	for k, v := range r.seen {
+		nr.seen[k] = v
+	}
+
+	return nr
+}
+
+func TestRead_Include_PrependsFrames(t *testing.T) {
+	root := strings.Join([]string{
+		"# include=a.show",
+		"OLA Show",
+		"1 9",
+		"0",
+	}, "\n")
+
+	a := strings.Join([]string{
+		"OLA Show",
+		"1 1",
+		"0",
+		"1 2",
+		"0",
+	}, "\n")
+
+	res := &memResolver{
+		files: map[string]string{
+			"a.show": a,
+		},
+	}
+
+	s, err := Read(strings.NewReader(root), res)
+	require.NoError(t, err)
+	require.Len(t, s.Frames, 3)
+	require.Equal(t, byte(1), s.Frames[0].Data[0])
+	require.Equal(t, byte(2), s.Frames[1].Data[0])
+	require.Equal(t, byte(9), s.Frames[2].Data[0])
+}
+
+func TestRead_Include_DuplicateFails(t *testing.T) {
+	root := strings.Join([]string{
+		"# include=a.show",
+		"# include=a.show",
+		"OLA Show",
+		"1 9",
+		"0",
+	}, "\n")
+
+	a := strings.Join([]string{
+		"OLA Show",
+		"1 1",
+		"0",
+	}, "\n")
+
+	res := &memResolver{
+		files: map[string]string{
+			"a.show": a,
+		},
+	}
+
+	_, err := Read(strings.NewReader(root), res)
+	require.Error(t, err)
+}
+
+func TestRead_SidecarMetadata_Applies(t *testing.T) {
+	root := strings.Join([]string{
+		"OLA Show",
+		"1 9",
+		"0",
+	}, "\n")
+
+	meta := strings.Join([]string{
+		"name=FromMeta",
+		"loop=true",
+		"exclusive=true",
+	}, "\n")
+
+	res := &memResolver{
+		metadata: meta,
+		files:    map[string]string{},
+	}
+
+	s, err := Read(strings.NewReader(root), res)
+	require.NoError(t, err)
+	require.Equal(t, "FromMeta", s.Name)
+	require.Equal(t, -1, s.Loop)
+	require.True(t, s.Exclusive)
+}
+
+func TestRead_SidecarMetadata_BothFails(t *testing.T) {
+	root := strings.Join([]string{
+		"# name=Inline",
+		"# loop=3",
+		"# exclusive=false",
+		"OLA Show",
+		"1 9",
+		"0",
+	}, "\n")
+
+	meta := strings.Join([]string{
+		"name=FromMeta",
+		"loop=true",
+		"exclusive=true",
+	}, "\n")
+
+	res := &memResolver{
+		metadata: meta,
+		files:    map[string]string{},
+	}
+
+	_, err := Read(strings.NewReader(root), res)
+	require.Error(t, err)
+}
+
+func TestRead_SidecarMetadata_IncludeWorks(t *testing.T) {
+	root := strings.Join([]string{
+		"OLA Show",
+		"1 9",
+		"0",
+	}, "\n")
+
+	a := strings.Join([]string{
+		"OLA Show",
+		"1 1",
+		"0",
+	}, "\n")
+
+	meta := "include=a.show\n"
+	res := &memResolver{
+		metadata: meta,
+		files: map[string]string{
+			"a.show": a,
+		},
+	}
+
+	s, err := Read(strings.NewReader(root), res)
+	require.NoError(t, err)
+	require.Len(t, s.Frames, 2)
+	require.Equal(t, byte(1), s.Frames[0].Data[0])
+	require.Equal(t, byte(9), s.Frames[1].Data[0])
 }
