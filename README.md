@@ -71,28 +71,77 @@ Common options:
 - `-stats 1s`: print a frame counter periodically (set `0` to disable).
 
 
-## OLA show format
+## OLA Show format
 
 Standard OLA show header:
 
-```
+```text
 OLA Show
 <universe> <v1>,<v2>,...,<vn>
 <delay_ms>
 ...
 ```
 
-This repo also supports optional metadata lines at the beginning:
+### Metadata
 
+This repo supports optional metadata that can be provided in two ways:
+
+#### Inline metadata (in the `.show` file)
+
+Metadata lines must appear **only at the beginning** of the file and must be a **consecutive block** (no blank lines inside). Each line uses:
+
+```text
+# key=value
 ```
+
+Example:
+
+```text
 # name=My Show
 # loop=true
+# exclusive=true
+# include=intro.show
 OLA Show
 ...
 ```
 
-- Only `name` and `loop` are supported.
-- `# ...` lines are only allowed before `OLA Show`.
+
+
+#### Sidecar metadata file (`.metadata`)
+
+If the show file is `myshow.show`, the loader will also look for:
+
+```text
+myshow.show.metadata
+```
+
+The sidecar uses the **same keys** but **without** the leading `#`:
+
+```text
+name=My Show
+loop=3
+exclusive=false
+include=intro.show
+```
+
+
+### Supported keys
+
+- `name=<string>`
+  Optional display name for the show.
+
+- `loop=<bool|int>`
+  Controls how many times the show should repeat:
+  - `true`  → infinite loop (`Loop = -1`)
+  - `false` → play once (`Loop = 0`)
+  - `<int>` → repeat that many times (`Loop = <int>`)
+
+- `exclusive=<bool>`
+  Indicates the show requests exclusive control while playing (the player should stop other running shows before starting this one).
+
+- `include=<file.show>`
+  Prepends the frames of another show before the current one.
+  Can be specified multiple times; includes are applied in order.
 
 
 ## License
