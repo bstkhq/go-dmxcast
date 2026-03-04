@@ -39,6 +39,12 @@ type OlaShow struct {
 	Frames []Frame
 }
 
+func (s *OlaShow) String() string {
+	var b strings.Builder
+	_ = Write(s, &b)
+	return b.String()
+}
+
 // Open reads an OLA Show file from disk.
 func Open(file string) (*OlaShow, error) {
 	resolver := NewDefaultResolver(file)
