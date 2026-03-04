@@ -5,7 +5,8 @@ Play OLA DMX show files and stream them over network protocols (currently Art-Ne
 This project includes:
 - `dmxcast`: a player that can run multiple shows at the same time and merge them (HTP/LTP).
 - `olashow`: a parser/writer for OLA Show text files.
-- `cmd/ola_player`: a CLI to play a show over Art-Net unicast.
+- `cmd/ola_player`: a CLI to play one or more shows over Art-Net unicast with merge/loop controls.
+- `cmd/ola_recorder`: a CLI recorder that captures Art-Net ArtDMX into an OLA Show file.
 
 ## Install
 
