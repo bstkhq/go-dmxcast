@@ -69,6 +69,8 @@ func NewPlayer(tx Transport, cfg *PlayerConfig) *Player {
 	return e
 }
 
+// Close stops all running shows, waits for internal goroutines to exit, and
+// closes the underlying Transport.
 func (e *Player) Close() error {
 	e.mu.Lock()
 	if e.closed {
@@ -95,6 +97,7 @@ func (e *Player) Close() error {
 
 type ShowHandle struct{ id uint64 }
 
+// ID returns the unique identifier of the handle.
 func (h ShowHandle) ID() uint64 { return h.id }
 
 // PlayingShow describes a currently running show.
@@ -102,9 +105,15 @@ type PlayingShow struct {
 	ID        uint64
 	Show      *olashow.OlaShow
 	StartedAt time.Time
-	Loop      bool
 }
 
+// Play starts playing show until it finishes, ctx is cancelled, or Stop is called.
+//
+// The OLA frame Universe field is ignored. All frames contribute to the single
+// merged output routed by the Transport.
+//
+// If show.Exclusive is true, the player stops all other running shows before
+// starting playback of this one.
 func (e *Player) Play(ctx context.Context, show *olashow.OlaShow) ShowHandle {
 	id := atomic.AddUint64(&e.nextID, 1)
 
@@ -132,6 +141,11 @@ func (e *Player) Play(ctx context.Context, show *olashow.OlaShow) ShowHandle {
 	return ShowHandle{id: id}
 }
 
+// Stop requests the show identified by h to stop.
+//
+// Stop is asynchronous: it signals the show goroutine, which will exit shortly
+// after (immediately for zero-delay frames, or after the current frame delay).
+// Calling Stop for an unknown handle is a no-op.
 func (e *Player) Stop(h ShowHandle) {
 	e.mu.Lock()
 	p := e.players[h.id]
@@ -142,6 +156,29 @@ func (e *Player) Stop(h ShowHandle) {
 	}
 }
 
+// StopAll requests all currently running shows to stop.
+//
+// StopAll is asynchronous; use IsPlaying or ListPlaying to observe completion.
+func (e *Player) StopAll() {
+	e.doStopAll(nil)
+}
+
+func (e *Player) doStopAll(except map[uint64]bool) {
+	e.mu.Lock()
+	ids := make([]uint64, 0, len(e.players))
+	for id := range e.players {
+		if !except[id] {
+			ids = append(ids, id)
+		}
+	}
+	e.mu.Unlock()
+
+	for _, id := range ids {
+		e.Stop(ShowHandle{id: id})
+	}
+}
+
+// IsPlaying reports whether the show identified by h is currently running.
 func (e *Player) IsPlaying(h ShowHandle) bool {
 	e.mu.Lock()
 	p := e.players[h.id]
@@ -150,6 +187,9 @@ func (e *Player) IsPlaying(h ShowHandle) bool {
 	return p != nil && p.running.Load()
 }
 
+// ListPlaying returns a snapshot of currently running shows.
+//
+// The returned slice is a point-in-time view; shows may start/stop concurrently.
 func (e *Player) ListPlaying() []PlayingShow {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -160,7 +200,6 @@ func (e *Player) ListPlaying() []PlayingShow {
 			ID:        p.id,
 			Show:      p.show,
 			StartedAt: p.startedAt,
-			Loop:      p.show.Loop,
 		})
 	}
 
@@ -216,6 +255,12 @@ func (p *showPlayer) stop() {
 func (p *showPlayer) run() {
 	// Note: OLA show frames include a Universe field, but this engine ignores it.
 	// All frames are mixed into the Engine's single output and routed by the Transport.
+
+	if p.show.Exclusive {
+		p.e.doStopAll(map[uint64]bool{p.id: true})
+	}
+
+	loopsLeft := p.show.Loop
 	for {
 		for i := 0; i < len(p.show.Frames); i++ {
 			fr := p.show.Frames[i]
@@ -253,7 +298,15 @@ func (p *showPlayer) run() {
 			}
 		}
 
-		if !p.show.Loop {
+		if loopsLeft == -1 {
+			continue
+		}
+		if loopsLeft == 0 {
+			return
+		}
+
+		loopsLeft--
+		if loopsLeft == 0 {
 			return
 		}
 	}
