@@ -170,12 +170,12 @@ func TestLibrary_Events_OnEvent_PlayStopFinishedRestartStopAll(t *testing.T) {
 	require.NoError(t, err)
 
 	require.Eventually(t, func() bool {
-		return len(events) >= 1 && events[0].Reason == "play"
+		return len(events) >= 1 && events[0].Reason == PlayLibraryEvent
 	}, 300*time.Millisecond, 1*time.Millisecond)
 
 	require.Eventually(t, func() bool {
 		for _, ev := range events {
-			if ev.Reason == "finished" {
+			if ev.Reason == FinishedLibraryEvent {
 				return true
 			}
 		}
@@ -188,7 +188,7 @@ func TestLibrary_Events_OnEvent_PlayStopFinishedRestartStopAll(t *testing.T) {
 
 	require.Eventually(t, func() bool {
 		for _, ev := range events {
-			if ev.Reason == "play" {
+			if ev.Reason == PlayLibraryEvent {
 				// ensure show 2 is reflected in a snapshot at least once
 				for _, p := range ev.Running {
 					if p.ShowID == 2 {
@@ -208,10 +208,10 @@ func TestLibrary_Events_OnEvent_PlayStopFinishedRestartStopAll(t *testing.T) {
 		hasRestart := false
 		hasPlayAfter := false
 		for _, ev := range events {
-			if ev.Reason == "restart" {
+			if ev.Reason == RestartLibraryEvent {
 				hasRestart = true
 			}
-			if hasRestart && ev.Reason == "play" {
+			if hasRestart && ev.Reason == PlayLibraryEvent {
 				// play after restart
 				hasPlayAfter = true
 			}
@@ -225,7 +225,7 @@ func TestLibrary_Events_OnEvent_PlayStopFinishedRestartStopAll(t *testing.T) {
 
 	require.Eventually(t, func() bool {
 		for _, ev := range events {
-			if ev.Reason == "stop" {
+			if ev.Reason == StopAllLibraryEvent {
 				return true
 			}
 		}
@@ -246,7 +246,7 @@ func TestLibrary_Events_OnEvent_PlayStopFinishedRestartStopAll(t *testing.T) {
 
 	require.Eventually(t, func() bool {
 		for _, ev := range events {
-			if ev.Reason == "stopall" {
+			if ev.Reason == StopAllLibraryEvent {
 				// snapshot should be empty or not contain 1/2 after stopall
 				has := false
 				for _, p := range ev.Running {

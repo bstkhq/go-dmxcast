@@ -225,7 +225,7 @@ func (l *Library) onPlayerExited(h ShowHandle) {
 	l.mu.Unlock()
 
 	if ok {
-		l.emitState("finished", &showID)
+		l.emitState(FinishedLibraryEvent, &showID)
 	}
 }
 
@@ -375,7 +375,7 @@ func (l *Library) Play(id int) (ShowHandle, error) {
 
 	if hadPrev {
 		l.player.Stop(prev)
-		l.emitState("restart", &id)
+		l.emitState(RestartLibraryEvent, &id)
 	}
 
 	showCopy := si.OlaShow
@@ -386,7 +386,7 @@ func (l *Library) Play(id int) (ShowHandle, error) {
 	l.handleToShow[h.ID()] = id
 	l.mu.Unlock()
 
-	l.emitState("play", &id)
+	l.emitState(PlayLibraryEvent, &id)
 	return h, nil
 }
 
@@ -409,7 +409,7 @@ func (l *Library) Stop(id int) (wasPlaying bool) {
 	wasPlaying = l.player.IsPlaying(h)
 	l.player.Stop(h)
 
-	l.emitState("stop", &id)
+	l.emitState(StopLibraryEvent, &id)
 	return wasPlaying
 }
 
@@ -421,7 +421,7 @@ func (l *Library) StopAll() {
 	l.mu.Unlock()
 
 	l.player.StopAll()
-	l.emitState("stopall", nil)
+	l.emitState(StopAllLibraryEvent, nil)
 }
 
 // IsShowPlaying reports whether the given show ID is currently playing.
