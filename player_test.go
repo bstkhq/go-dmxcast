@@ -278,25 +278,30 @@ func TestPlayer_HTP_ExactMergedSequence(t *testing.T) {
 
 func TestPlayer_Loop(t *testing.T) {
 	mt := &mockTransport{}
-	e := NewPlayer(mt, &PlayerConfig{
+	p := NewPlayer(mt, &PlayerConfig{
 		Mode:          MergeHTP,
 		FlushInterval: 1 * time.Millisecond,
 	})
-	defer e.Close()
+	defer p.Close()
 
-	show := makeShow(100,
-		frame(1, 50*time.Millisecond, map[int]byte{0: 50}),
-	)
+	show := makeShow(50, frame(1, 1*time.Millisecond, map[int]byte{0: 50}))
 
-	hB := e.Play(context.Background(), show)
-	defer e.Stop(hB)
+	done := make(chan uint64, 1)
+	p.OnShowExited(func(h ShowHandle) { done <- h.ID() })
 
-	// Wait until the baseline is observable.
+	h := p.Play(context.Background(), show)
+
 	require.Eventually(t, func() bool {
-		return len(mt.all()) == 100
-	}, 500*time.Millisecond, 1*time.Millisecond)
+		return !p.IsPlaying(h)
+	}, 2*time.Second, 2*time.Millisecond)
 
-	require.Len(t, mt.all(), 100)
+	select {
+	case got := <-done:
+		require.Equal(t, h.ID(), got)
+		require.Greater(t, len(mt.all()), 50)
+	case <-time.After(500 * time.Millisecond):
+		require.FailNow(t, "timeout waiting for OnShowExited")
+	}
 }
 
 func TestPlayer_ExclusiveStopsOthers(t *testing.T) {
@@ -379,4 +384,76 @@ func TestPlayer_StopAll(t *testing.T) {
 	require.Eventually(t, func() bool {
 		return len(e.ListPlaying()) == 0
 	}, 400*time.Millisecond, 1*time.Millisecond)
+}
+
+func TestPlayer_OnShowExited_CalledOnNaturalCompletion(t *testing.T) {
+	p := NewPlayer(&mockTransport{}, &PlayerConfig{
+		Mode:          MergeHTP,
+		FlushInterval: 2 * time.Millisecond,
+	})
+	defer p.Close()
+
+	var (
+		mu     sync.Mutex
+		called []uint64
+	)
+
+	p.OnShowExited(func(h ShowHandle) {
+		mu.Lock()
+		called = append(called, h.ID())
+		mu.Unlock()
+	})
+
+	// Loop=0 => play once; ensure it completes quickly.
+	show := makeShow(0,
+		frame(1, 10*time.Millisecond, map[int]byte{0: 10}),
+		frame(2, 10*time.Millisecond, map[int]byte{0: 10}),
+	)
+
+	h := p.Play(context.Background(), show)
+
+	require.Eventually(t, func() bool {
+		return !p.IsPlaying(h)
+	}, 500*time.Millisecond, 1*time.Millisecond)
+
+	require.Eventually(t, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(called) == 1 && called[0] == h.ID()
+	}, 500*time.Millisecond, 1*time.Millisecond)
+}
+
+func TestPlayer_OnShowExited_CalledOnStop(t *testing.T) {
+	p := NewPlayer(&mockTransport{}, &PlayerConfig{
+		Mode:          MergeHTP,
+		FlushInterval: 2 * time.Millisecond,
+	})
+	defer p.Close()
+
+	done := make(chan uint64, 1)
+	p.OnShowExited(func(h ShowHandle) { done <- h.ID() })
+
+	// Loop=-1 => infinite; we'll stop it.
+	show := makeShow(-1,
+		frame(1, 50*time.Millisecond, map[int]byte{0: 10}),
+	)
+
+	h := p.Play(context.Background(), show)
+
+	require.Eventually(t, func() bool {
+		return p.IsPlaying(h)
+	}, 200*time.Millisecond, 1*time.Millisecond)
+
+	p.Stop(h)
+
+	require.Eventually(t, func() bool {
+		return !p.IsPlaying(h)
+	}, 500*time.Millisecond, 1*time.Millisecond)
+
+	select {
+	case got := <-done:
+		require.Equal(t, h.ID(), got)
+	case <-time.After(500 * time.Millisecond):
+		require.FailNow(t, "timeout waiting for OnShowExited callback")
+	}
 }

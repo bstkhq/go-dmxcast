@@ -46,6 +46,7 @@ type Player struct {
 
 	flushInterval time.Duration
 	mergeSeq      uint64
+	onShowExited  func(ShowHandle)
 }
 
 const defaultFlushInterval = time.Second / 44
@@ -67,6 +68,12 @@ func NewPlayer(tx Transport, cfg *PlayerConfig) *Player {
 
 	e.wg.Go(e.outputLoop)
 	return e
+}
+
+// OnShowExited sets a callback invoked when a show goroutine exits and is
+// removed from the player or ctx cancel).
+func (e *Player) OnShowExited(cb func(ShowHandle)) {
+	e.onShowExited = cb
 }
 
 // Close stops all running shows, waits for internal goroutines to exit, and
@@ -212,6 +219,10 @@ func (e *Player) onShowExit(p *showPlayer) {
 	e.mu.Unlock()
 
 	e.u.Remove(p.id)
+
+	if e.onShowExited != nil {
+		e.onShowExited(ShowHandle{id: p.id})
+	}
 }
 
 func (e *Player) outputLoop() {
