@@ -36,7 +36,7 @@ type OlaShow struct {
 	// Exclusive indicates the show requests exclusive control while playing.
 	Exclusive bool
 	// Frames is the sequence of DMX snapshots that make up the show.
-	Frames []Frame
+	Frames []Frame `json:"-"`
 }
 
 func (s *OlaShow) String() string {
