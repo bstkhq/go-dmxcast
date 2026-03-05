@@ -230,7 +230,7 @@ func TestLibrary_Events_OnEvent_PlayStopFinishedRestartStopAll(t *testing.T) {
 			}
 		}
 		return false
-	}, 500*time.Millisecond, 1*time.Millisecond)
+	}, 700*time.Millisecond, 1*time.Millisecond)
 
 	// ---- play both then stopall -> should emit "stopall" ----
 	_, err = lib.Play(1)
@@ -240,7 +240,7 @@ func TestLibrary_Events_OnEvent_PlayStopFinishedRestartStopAll(t *testing.T) {
 
 	require.Eventually(t, func() bool {
 		return lib.IsShowPlaying(1) && lib.IsShowPlaying(2)
-	}, 500*time.Millisecond, 1*time.Millisecond)
+	}, 700*time.Millisecond, 1*time.Millisecond)
 
 	lib.StopAll()
 

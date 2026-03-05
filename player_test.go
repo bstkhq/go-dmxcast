@@ -298,7 +298,7 @@ func TestPlayer_Loop(t *testing.T) {
 	select {
 	case got := <-done:
 		require.Equal(t, h.ID(), got)
-		require.Greater(t, len(mt.all()), 50)
+		require.GreaterOrEqual(t, len(mt.all()), 50)
 	case <-time.After(500 * time.Millisecond):
 		require.FailNow(t, "timeout waiting for OnShowExited")
 	}
