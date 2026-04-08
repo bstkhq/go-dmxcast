@@ -272,6 +272,12 @@ func (p *showPlayer) run() {
 	}
 
 	loopsLeft := p.show.Loop
+	var deadline time.Time
+	useDuration := p.show.Duration > 0
+	if useDuration {
+		deadline = time.Now().Add(p.show.Duration)
+	}
+
 	for {
 		for i := 0; i < len(p.show.Frames); i++ {
 			fr := p.show.Frames[i]
@@ -307,6 +313,13 @@ func (p *showPlayer) run() {
 				return
 			case <-t.C:
 			}
+		}
+
+		if useDuration {
+			if !time.Now().Before(deadline) {
+				return
+			}
+			continue
 		}
 
 		if loopsLeft == -1 {

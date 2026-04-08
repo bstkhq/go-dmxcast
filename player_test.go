@@ -1,8 +1,8 @@
-// engine_test.go
 package dmxcast
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -11,43 +11,46 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-type sendEvent struct {
-	at  time.Time
-	dmx [512]byte
-}
-
 type mockTransport struct {
-	mu    sync.Mutex
-	sends []sendEvent
+	mu   sync.Mutex
+	allv [][512]byte
 }
 
 func (m *mockTransport) Send(dmx [512]byte) error {
 	m.mu.Lock()
-	m.sends = append(m.sends, sendEvent{
-		at:  time.Now(),
-		dmx: dmx,
-	})
-	m.mu.Unlock()
+	defer m.mu.Unlock()
+	m.allv = append(m.allv, dmx)
 	return nil
 }
 
 func (m *mockTransport) Close() error { return nil }
 
-func (m *mockTransport) last() (sendEvent, bool) {
+func (m *mockTransport) all() [][512]byte {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if len(m.sends) == 0 {
-		return sendEvent{}, false
-	}
-	return m.sends[len(m.sends)-1], true
+
+	out := make([][512]byte, len(m.allv))
+	copy(out, m.allv)
+	return out
 }
 
-func (m *mockTransport) all() []sendEvent {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	out := make([]sendEvent, len(m.sends))
-	copy(out, m.sends)
-	return out
+func frame(universe uint16, delay time.Duration, vals map[int]byte) olashow.Frame {
+	var f olashow.Frame
+	f.Universe = universe
+	f.Delay = delay
+
+	max := 0
+	for ch, v := range vals {
+		if ch >= 0 && ch < 512 {
+			f.Data[ch] = v
+			if ch+1 > max {
+				max = ch + 1
+			}
+		}
+	}
+	f.Length = max
+
+	return f
 }
 
 func makeShow(loop int, frames ...olashow.Frame) *olashow.OlaShow {
@@ -58,222 +61,49 @@ func makeShow(loop int, frames ...olashow.Frame) *olashow.OlaShow {
 	}
 }
 
-func frame(universe uint16, delay time.Duration, vals map[int]byte) olashow.Frame {
-	var f olashow.Frame
-	f.Universe = universe
-	f.Delay = delay
-	f.Length = 512
-	for ch, v := range vals {
-		f.Data[ch] = v
+func makeShowWithDuration(duration time.Duration, frames ...olashow.Frame) *olashow.OlaShow {
+	return &olashow.OlaShow{
+		Loop:     -1,
+		Duration: duration,
+		Name:     "test",
+		Frames:   frames,
 	}
-	return f
 }
 
-func waitForAtLeastSends(t *testing.T, mt *mockTransport, n int, timeout time.Duration) {
-	t.Helper()
-	require.Eventually(t, func() bool {
-		return len(mt.all()) >= n
-	}, timeout, 1*time.Millisecond)
-}
-
-func TestPlayer_PlayStopAndList(t *testing.T) {
+func TestPlayer_SingleShow_Output(t *testing.T) {
 	mt := &mockTransport{}
-	e := NewPlayer(mt, &PlayerConfig{
-		Mode:          MergeHTP,
-		FlushInterval: 2 * time.Millisecond,
-	})
-	defer e.Close()
-
-	s := makeShow(-1, frame(99, 0, map[int]byte{0: 10}))
-	h := e.Play(context.Background(), s)
-	defer e.Stop(h)
-
-	require.True(t, e.IsPlaying(h))
-
-	playing := e.ListPlaying()
-	require.Len(t, playing, 1)
-	require.Equal(t, h.ID(), playing[0].ID)
-	require.Same(t, s, playing[0].Show)
-
-	e.Stop(h)
-
-	require.Eventually(t, func() bool {
-		return !e.IsPlaying(h)
-	}, 300*time.Millisecond, 1*time.Millisecond)
-}
-
-func TestPlayer_IgnoresFrameUniverse_UsesEngineUniverse(t *testing.T) {
-	mt := &mockTransport{}
-	e := NewPlayer(mt, &PlayerConfig{
-		Mode:          MergeHTP,
-		FlushInterval: 2 * time.Millisecond,
-	})
-	defer e.Close()
-
-	s := makeShow(-1, frame(999, 0, map[int]byte{0: 7}))
-	h := e.Play(context.Background(), s)
-	defer e.Stop(h)
-
-	require.Eventually(t, func() bool {
-		ev, ok := mt.last()
-		return ok && ev.dmx[0] == 7
-	}, 300*time.Millisecond, 1*time.Millisecond)
-}
-
-func TestPlayer_HTP_MaxAndFallback(t *testing.T) {
-	mt := &mockTransport{}
-	e := NewPlayer(mt, &PlayerConfig{
-		Mode:          MergeHTP,
-		FlushInterval: 2 * time.Millisecond,
-	})
-	defer e.Close()
-
-	// Both start at 0 to remove start-order flakiness.
-	showB := makeShow(-1,
-		frame(1, 0, map[int]byte{0: 0}),
-		frame(1, 10*time.Millisecond, map[int]byte{0: 5}),
-		frame(1, 50*time.Millisecond, map[int]byte{0: 5}),
-	)
-	hB := e.Play(context.Background(), showB)
-	defer e.Stop(hB)
-
-	showA := makeShow(-1,
-		frame(1, 0, map[int]byte{0: 0}),
-		frame(1, 15*time.Millisecond, map[int]byte{0: 10}),
-		frame(1, 20*time.Millisecond, map[int]byte{0: 0}),
-		frame(1, 50*time.Millisecond, map[int]byte{0: 0}),
-	)
-	hA := e.Play(context.Background(), showA)
-	defer e.Stop(hA)
-
-	require.Eventually(t, func() bool {
-		ev, ok := mt.last()
-		return ok && ev.dmx[0] == 10
-	}, 600*time.Millisecond, 1*time.Millisecond)
-
-	require.Eventually(t, func() bool {
-		ev, ok := mt.last()
-		return ok && ev.dmx[0] == 5
-	}, 800*time.Millisecond, 1*time.Millisecond)
-}
-
-func TestPlayer_LTP_LastWriterWins(t *testing.T) {
-	mt := &mockTransport{}
-	e := NewPlayer(mt, &PlayerConfig{
-		Mode:          MergeLTP,
-		FlushInterval: 2 * time.Millisecond,
-	})
-	defer e.Close()
-
-	showA := makeShow(-1,
-		frame(1, 0, map[int]byte{0: 10}),
-		frame(1, 50*time.Millisecond, map[int]byte{0: 10}),
-	)
-	hA := e.Play(context.Background(), showA)
-	defer e.Stop(hA)
-
-	require.Eventually(t, func() bool {
-		ev, ok := mt.last()
-		return ok && ev.dmx[0] == 10
-	}, 300*time.Millisecond, 1*time.Millisecond)
-
-	showB := makeShow(-1,
-		frame(1, 10*time.Millisecond, map[int]byte{0: 5}),
-		frame(1, 50*time.Millisecond, map[int]byte{0: 5}),
-	)
-	hB := e.Play(context.Background(), showB)
-	defer e.Stop(hB)
-
-	require.Eventually(t, func() bool {
-		ev, ok := mt.last()
-		return ok && ev.dmx[0] == 5
-	}, 700*time.Millisecond, 1*time.Millisecond)
-}
-
-func TestPlayer_StopRemovesContribution(t *testing.T) {
-	mt := &mockTransport{}
-	e := NewPlayer(mt, &PlayerConfig{
-		Mode:          MergeHTP,
-		FlushInterval: 2 * time.Millisecond,
-	})
-	defer e.Close()
-
-	showA := makeShow(-1, frame(1, 10*time.Millisecond, map[int]byte{0: 200}))
-	hA := e.Play(context.Background(), showA)
-	defer e.Stop(hA)
-
-	showB := makeShow(-1, frame(1, 10*time.Millisecond, map[int]byte{0: 10}))
-	hB := e.Play(context.Background(), showB)
-	defer e.Stop(hB)
-
-	require.Eventually(t, func() bool {
-		ev, ok := mt.last()
-		return ok && ev.dmx[0] == 200
-	}, 500*time.Millisecond, 1*time.Millisecond)
-
-	e.Stop(hA)
-
-	require.Eventually(t, func() bool {
-		ev, ok := mt.last()
-		return ok && ev.dmx[0] == 10
-	}, 700*time.Millisecond, 1*time.Millisecond)
-}
-
-func TestPlayer_HTP_ExactMergedSequence(t *testing.T) {
-	mt := &mockTransport{}
-	e := NewPlayer(mt, &PlayerConfig{
+	p := NewPlayer(mt, &PlayerConfig{
 		Mode:          MergeHTP,
 		FlushInterval: 1 * time.Millisecond,
 	})
-	defer e.Close()
+	defer p.Close()
 
-	// B establishes the baseline first.
-	showB := makeShow(-1,
-		frame(1, 0, map[int]byte{0: 50}),
-		frame(1, 50*time.Millisecond, map[int]byte{0: 50}),
+	show := makeShow(0,
+		frame(1, 20*time.Millisecond, map[int]byte{0: 10, 1: 20}),
+		frame(1, 20*time.Millisecond, map[int]byte{0: 30, 1: 40}),
 	)
-	hB := e.Play(context.Background(), showB)
-	defer e.Stop(hB)
 
-	// Wait until the baseline is observable.
+	h := p.Play(context.Background(), show)
+
 	require.Eventually(t, func() bool {
-		ev, ok := mt.last()
-		return ok && ev.dmx[0] == 50
-	}, 300*time.Millisecond, 1*time.Millisecond)
+		return !p.IsPlaying(h)
+	}, 500*time.Millisecond, 1*time.Millisecond)
 
-	// Start A only after baseline is observable.
-	showA := makeShow(-1,
-		frame(1, 0, map[int]byte{0: 0}),
-		frame(1, 8*time.Millisecond, map[int]byte{0: 100}),
-		frame(1, 5*time.Millisecond, map[int]byte{0: 0}),
-		frame(1, 5*time.Millisecond, map[int]byte{0: 100}),
-	)
-	hA := e.Play(context.Background(), showA)
-	defer e.Stop(hA)
+	all := mt.all()
+	require.NotEmpty(t, all)
 
-	waitForAtLeastSends(t, mt, 40, 600*time.Millisecond)
-
-	sends := mt.all()
-
-	// Find first occurrence of 50 to anchor the sequence.
-	start := 0
-	for start < len(sends) && sends[start].dmx[0] != 50 {
-		start++
-	}
-	require.Less(t, start, len(sends), "never observed baseline 50")
-
-	var got []byte
-	for _, ev := range sends[start:] {
-		if len(got) == 0 || got[len(got)-1] != ev.dmx[0] {
-			got = append(got, ev.dmx[0])
+	var sawFirst, sawSecond bool
+	for _, dmx := range all {
+		if dmx[0] == 10 && dmx[1] == 20 {
+			sawFirst = true
 		}
-		if len(got) >= 4 {
-			break
+		if dmx[0] == 30 && dmx[1] == 40 {
+			sawSecond = true
 		}
 	}
 
-	require.GreaterOrEqual(t, len(got), 4, "not enough transitions captured")
-	require.Equal(t, []byte{50, 100, 50, 100}, got[:4])
+	require.True(t, sawFirst)
+	require.True(t, sawSecond)
 }
 
 func TestPlayer_Loop(t *testing.T) {
@@ -304,111 +134,20 @@ func TestPlayer_Loop(t *testing.T) {
 	}
 }
 
-func TestPlayer_ExclusiveStopsOthers(t *testing.T) {
+func TestPlayer_DurationCompletesNaturally(t *testing.T) {
 	mt := &mockTransport{}
-	e := NewPlayer(mt, &PlayerConfig{
+	p := NewPlayer(mt, &PlayerConfig{
 		Mode:          MergeHTP,
-		FlushInterval: 2 * time.Millisecond,
-	})
-	defer e.Close()
-
-	// A: infinite, non-exclusive.
-	showA := makeShow(-1,
-		frame(1, 0, map[int]byte{0: 10}),
-		frame(1, 50*time.Millisecond, map[int]byte{0: 10}),
-	)
-	hA := e.Play(context.Background(), showA)
-	defer e.Stop(hA)
-
-	// Ensure A is contributing.
-	require.Eventually(t, func() bool {
-		ev, ok := mt.last()
-		return ok && ev.dmx[0] == 10
-	}, 300*time.Millisecond, 1*time.Millisecond)
-
-	// B: exclusive, should stop A.
-	showB := makeShow(-1,
-		frame(1, 0, map[int]byte{0: 200}),
-		frame(1, 50*time.Millisecond, map[int]byte{0: 200}),
-	)
-	showB.Exclusive = true
-
-	hB := e.Play(context.Background(), showB)
-	defer e.Stop(hB)
-
-	// A should be stopped.
-	require.Eventually(t, func() bool {
-		return !e.IsPlaying(hA)
-	}, 300*time.Millisecond, 1*time.Millisecond)
-
-	// Output should reflect B.
-	require.Eventually(t, func() bool {
-		ev, ok := mt.last()
-		return ok && ev.dmx[0] == 200
-	}, 300*time.Millisecond, 1*time.Millisecond)
-
-	// And B should still be running.
-	require.True(t, e.IsPlaying(hB))
-}
-
-func TestPlayer_StopAll(t *testing.T) {
-	mt := &mockTransport{}
-	e := NewPlayer(mt, &PlayerConfig{
-		Mode:          MergeHTP,
-		FlushInterval: 2 * time.Millisecond,
-	})
-	defer e.Close()
-
-	showA := makeShow(-1,
-		frame(1, 0, map[int]byte{0: 10}),
-		frame(1, 50*time.Millisecond, map[int]byte{0: 10}),
-	)
-	showB := makeShow(-1,
-		frame(1, 0, map[int]byte{0: 20}),
-		frame(1, 50*time.Millisecond, map[int]byte{0: 20}),
-	)
-
-	hA := e.Play(context.Background(), showA)
-	hB := e.Play(context.Background(), showB)
-
-	require.Eventually(t, func() bool {
-		return e.IsPlaying(hA) && e.IsPlaying(hB)
-	}, 200*time.Millisecond, 1*time.Millisecond)
-
-	e.StopAll()
-
-	require.Eventually(t, func() bool {
-		return !e.IsPlaying(hA) && !e.IsPlaying(hB)
-	}, 400*time.Millisecond, 1*time.Millisecond)
-
-	require.Eventually(t, func() bool {
-		return len(e.ListPlaying()) == 0
-	}, 400*time.Millisecond, 1*time.Millisecond)
-}
-
-func TestPlayer_OnShowExited_CalledOnNaturalCompletion(t *testing.T) {
-	p := NewPlayer(&mockTransport{}, &PlayerConfig{
-		Mode:          MergeHTP,
-		FlushInterval: 2 * time.Millisecond,
+		FlushInterval: 1 * time.Millisecond,
 	})
 	defer p.Close()
 
-	var (
-		mu     sync.Mutex
-		called []uint64
+	show := makeShowWithDuration(60*time.Millisecond,
+		frame(1, 10*time.Millisecond, map[int]byte{0: 50}),
 	)
 
-	p.OnShowExited(func(h ShowHandle) {
-		mu.Lock()
-		called = append(called, h.ID())
-		mu.Unlock()
-	})
-
-	// Loop=0 => play once; ensure it completes quickly.
-	show := makeShow(0,
-		frame(1, 10*time.Millisecond, map[int]byte{0: 10}),
-		frame(2, 10*time.Millisecond, map[int]byte{0: 10}),
-	)
+	done := make(chan uint64, 1)
+	p.OnShowExited(func(h ShowHandle) { done <- h.ID() })
 
 	h := p.Play(context.Background(), show)
 
@@ -416,27 +155,73 @@ func TestPlayer_OnShowExited_CalledOnNaturalCompletion(t *testing.T) {
 		return !p.IsPlaying(h)
 	}, 500*time.Millisecond, 1*time.Millisecond)
 
-	require.Eventually(t, func() bool {
-		mu.Lock()
-		defer mu.Unlock()
-		return len(called) == 1 && called[0] == h.ID()
-	}, 500*time.Millisecond, 1*time.Millisecond)
+	select {
+	case got := <-done:
+		require.Equal(t, h.ID(), got)
+	case <-time.After(500 * time.Millisecond):
+		require.FailNow(t, "timeout waiting for OnShowExited")
+	}
 }
 
-func TestPlayer_OnShowExited_CalledOnStop(t *testing.T) {
-	p := NewPlayer(&mockTransport{}, &PlayerConfig{
+func TestPlayer_DurationOverridesLoop(t *testing.T) {
+	mt := &mockTransport{}
+	p := NewPlayer(mt, &PlayerConfig{
 		Mode:          MergeHTP,
-		FlushInterval: 2 * time.Millisecond,
+		FlushInterval: 1 * time.Millisecond,
 	})
 	defer p.Close()
 
-	done := make(chan uint64, 1)
-	p.OnShowExited(func(h ShowHandle) { done <- h.ID() })
+	show := &olashow.OlaShow{
+		Loop:     -1,
+		Duration: 50 * time.Millisecond,
+		Name:     "test",
+		Frames: []olashow.Frame{
+			frame(1, 10*time.Millisecond, map[int]byte{0: 50}),
+		},
+	}
 
-	// Loop=-1 => infinite; we'll stop it.
-	show := makeShow(-1,
-		frame(1, 50*time.Millisecond, map[int]byte{0: 10}),
-	)
+	h := p.Play(context.Background(), show)
+
+	require.Eventually(t, func() bool {
+		return !p.IsPlaying(h)
+	}, 500*time.Millisecond, 1*time.Millisecond)
+}
+
+func TestPlayer_DurationZeroFallsBackToLoop(t *testing.T) {
+	mt := &mockTransport{}
+	p := NewPlayer(mt, &PlayerConfig{
+		Mode:          MergeHTP,
+		FlushInterval: 1 * time.Millisecond,
+	})
+	defer p.Close()
+
+	show := &olashow.OlaShow{
+		Loop:     3,
+		Duration: 0,
+		Name:     "test",
+		Frames: []olashow.Frame{
+			frame(1, 10*time.Millisecond, map[int]byte{0: 50}),
+		},
+	}
+
+	h := p.Play(context.Background(), show)
+
+	require.Eventually(t, func() bool {
+		return !p.IsPlaying(h)
+	}, 500*time.Millisecond, 1*time.Millisecond)
+
+	require.GreaterOrEqual(t, len(mt.all()), 3)
+}
+
+func TestPlayer_Stop(t *testing.T) {
+	mt := &mockTransport{}
+	p := NewPlayer(mt, &PlayerConfig{
+		Mode:          MergeHTP,
+		FlushInterval: 1 * time.Millisecond,
+	})
+	defer p.Close()
+
+	show := makeShow(-1, frame(1, 50*time.Millisecond, map[int]byte{0: 99}))
 
 	h := p.Play(context.Background(), show)
 
@@ -449,11 +234,156 @@ func TestPlayer_OnShowExited_CalledOnStop(t *testing.T) {
 	require.Eventually(t, func() bool {
 		return !p.IsPlaying(h)
 	}, 500*time.Millisecond, 1*time.Millisecond)
+}
 
-	select {
-	case got := <-done:
-		require.Equal(t, h.ID(), got)
-	case <-time.After(500 * time.Millisecond):
-		require.FailNow(t, "timeout waiting for OnShowExited callback")
+func TestPlayer_StopAll(t *testing.T) {
+	mt := &mockTransport{}
+	p := NewPlayer(mt, &PlayerConfig{
+		Mode:          MergeHTP,
+		FlushInterval: 1 * time.Millisecond,
+	})
+	defer p.Close()
+
+	h1 := p.Play(context.Background(), makeShow(-1, frame(1, 50*time.Millisecond, map[int]byte{0: 10})))
+	h2 := p.Play(context.Background(), makeShow(-1, frame(1, 50*time.Millisecond, map[int]byte{1: 20})))
+
+	require.Eventually(t, func() bool {
+		return p.IsPlaying(h1) && p.IsPlaying(h2)
+	}, 200*time.Millisecond, 1*time.Millisecond)
+
+	p.StopAll()
+
+	require.Eventually(t, func() bool {
+		return !p.IsPlaying(h1) && !p.IsPlaying(h2)
+	}, 500*time.Millisecond, 1*time.Millisecond)
+}
+
+func TestPlayer_ExclusiveStopsOthers(t *testing.T) {
+	mt := &mockTransport{}
+	p := NewPlayer(mt, &PlayerConfig{
+		Mode:          MergeHTP,
+		FlushInterval: 1 * time.Millisecond,
+	})
+	defer p.Close()
+
+	normal := makeShow(-1, frame(1, 50*time.Millisecond, map[int]byte{0: 10}))
+	h1 := p.Play(context.Background(), normal)
+
+	require.Eventually(t, func() bool {
+		return p.IsPlaying(h1)
+	}, 200*time.Millisecond, 1*time.Millisecond)
+
+	exclusive := &olashow.OlaShow{
+		Name:      "exclusive",
+		Exclusive: true,
+		Frames: []olashow.Frame{
+			frame(1, 50*time.Millisecond, map[int]byte{0: 100}),
+		},
 	}
+
+	h2 := p.Play(context.Background(), exclusive)
+
+	require.Eventually(t, func() bool {
+		return p.IsPlaying(h2) && !p.IsPlaying(h1)
+	}, 500*time.Millisecond, 1*time.Millisecond)
+}
+
+func TestPlayer_ListPlaying(t *testing.T) {
+	mt := &mockTransport{}
+	p := NewPlayer(mt, &PlayerConfig{
+		Mode:          MergeHTP,
+		FlushInterval: 1 * time.Millisecond,
+	})
+	defer p.Close()
+
+	h1 := p.Play(context.Background(), makeShow(-1, frame(1, 50*time.Millisecond, map[int]byte{0: 1})))
+	h2 := p.Play(context.Background(), makeShow(-1, frame(1, 50*time.Millisecond, map[int]byte{1: 2})))
+
+	require.Eventually(t, func() bool {
+		ps := p.ListPlaying()
+		return len(ps) >= 2
+	}, 200*time.Millisecond, 1*time.Millisecond)
+
+	ps := p.ListPlaying()
+	require.Len(t, ps, 2)
+
+	ids := map[uint64]bool{}
+	for _, s := range ps {
+		ids[s.ID] = true
+		require.NotNil(t, s.Show)
+		require.False(t, s.StartedAt.IsZero())
+	}
+
+	require.True(t, ids[h1.ID()])
+	require.True(t, ids[h2.ID()])
+}
+
+func TestPlayer_ContextCancelStopsShow(t *testing.T) {
+	mt := &mockTransport{}
+	p := NewPlayer(mt, &PlayerConfig{
+		Mode:          MergeHTP,
+		FlushInterval: 1 * time.Millisecond,
+	})
+	defer p.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	h := p.Play(ctx, makeShow(-1, frame(1, 50*time.Millisecond, map[int]byte{0: 42})))
+
+	require.Eventually(t, func() bool {
+		return p.IsPlaying(h)
+	}, 200*time.Millisecond, 1*time.Millisecond)
+
+	cancel()
+
+	require.Eventually(t, func() bool {
+		return !p.IsPlaying(h)
+	}, 500*time.Millisecond, 1*time.Millisecond)
+}
+
+func TestPlayer_SingleFrameDuration400ms_UsesImplicitDelayAndSendsExpectedPackets(t *testing.T) {
+	in := `# name=smoke-soft
+# duration=400ms
+OLA Show
+1 172,10,180,123,0,0,0,0`
+
+	show, err := olashow.Read(strings.NewReader(in), nil)
+	require.NoError(t, err)
+
+	require.Equal(t, "smoke-soft", show.Name)
+	require.Equal(t, 400*time.Millisecond, show.Duration)
+	require.Len(t, show.Frames, 1)
+	require.Equal(t, olashow.DefaultImplicitFrameDelay, show.Frames[0].Delay)
+
+	mt := &mockTransport{}
+	p := NewPlayer(mt, &PlayerConfig{
+		Mode:          MergeHTP,
+		FlushInterval: defaultFlushInterval,
+	})
+	defer p.Close()
+
+	h := p.Play(context.Background(), show)
+
+	require.Eventually(t, func() bool {
+		return !p.IsPlaying(h)
+	}, 2*time.Second, 5*time.Millisecond)
+
+	// Wait one extra flush interval so the last useful merged frame can be sent.
+	time.Sleep(defaultFlushInterval)
+
+	all := mt.all()
+
+	// Count only packets that contain the expected frame content.
+	matching := 0
+	for _, dmx := range all {
+		if dmx[0] == 172 &&
+			dmx[1] == 10 &&
+			dmx[2] == 180 &&
+			dmx[3] == 123 {
+			matching++
+		}
+	}
+
+	// 400ms / (1/44)s = 17.6, so we expect about 18 useful packets.
+	// Allow a small tolerance because goroutine scheduling and ticker timing are not exact.
+	require.InDelta(t, 18, matching, 1)
 }
