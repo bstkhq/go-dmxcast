@@ -85,10 +85,11 @@ func TestWrite_InvalidLength(t *testing.T) {
 	require.Error(t, Write(s, &buf))
 }
 
-func TestRead_Metadata_Block_ParsesNameLoopExclusive(t *testing.T) {
+func TestRead_Metadata_Block_ParsesNameLoopDurationExclusive(t *testing.T) {
 	in := strings.Join([]string{
 		"# name=My Show",
 		"# loop=true",
+		"# duration=400ms",
 		"# exclusive=true",
 		"OLA Show",
 		"1 1,2,3",
@@ -99,6 +100,7 @@ func TestRead_Metadata_Block_ParsesNameLoopExclusive(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "My Show", s.Name)
 	require.Equal(t, -1, s.Loop)
+	require.Equal(t, 400*time.Millisecond, s.Duration)
 	require.True(t, s.Exclusive)
 	require.Len(t, s.Frames, 1)
 	require.Equal(t, 10*time.Millisecond, s.Frames[0].Delay)
@@ -115,6 +117,7 @@ func TestRead_Metadata_LoopBoolFalseIsZero(t *testing.T) {
 	s, err := Read(strings.NewReader(in), nil)
 	require.NoError(t, err)
 	require.Equal(t, 0, s.Loop)
+	require.Equal(t, time.Duration(0), s.Duration)
 }
 
 func TestRead_Metadata_LoopInt(t *testing.T) {
@@ -128,6 +131,32 @@ func TestRead_Metadata_LoopInt(t *testing.T) {
 	s, err := Read(strings.NewReader(in), nil)
 	require.NoError(t, err)
 	require.Equal(t, 3, s.Loop)
+	require.Equal(t, time.Duration(0), s.Duration)
+}
+
+func TestRead_Metadata_Duration(t *testing.T) {
+	in := strings.Join([]string{
+		"# duration=400ms",
+		"OLA Show",
+		"1 1,2,3",
+		"0",
+	}, "\n")
+
+	s, err := Read(strings.NewReader(in), nil)
+	require.NoError(t, err)
+	require.Equal(t, 400*time.Millisecond, s.Duration)
+}
+
+func TestRead_Metadata_DurationInvalidFails(t *testing.T) {
+	in := strings.Join([]string{
+		"# duration=banana",
+		"OLA Show",
+		"1 1,2,3",
+		"0",
+	}, "\n")
+
+	_, err := Read(strings.NewReader(in), nil)
+	require.Error(t, err)
 }
 
 func TestRead_Metadata_UnknownKeyFails(t *testing.T) {
@@ -181,10 +210,23 @@ func TestRead_Metadata_NotAllowedAfterHeaderFails(t *testing.T) {
 	require.Error(t, err)
 }
 
-func TestWrite_Metadata_FormatsLoopAndExclusive(t *testing.T) {
+func TestRead_TrailingFrameWithoutDelay_UsesDefaultImplicitFrameDelay(t *testing.T) {
+	in := strings.Join([]string{
+		"OLA Show",
+		"1 1,2,3",
+	}, "\n")
+
+	s, err := Read(strings.NewReader(in), nil)
+	require.NoError(t, err)
+	require.Len(t, s.Frames, 1)
+	require.Equal(t, DefaultImplicitFrameDelay, s.Frames[0].Delay)
+}
+
+func TestWrite_Metadata_FormatsLoopDurationAndExclusive(t *testing.T) {
 	show := &OlaShow{
 		Name:      "Hello",
 		Loop:      -1,
+		Duration:  400 * time.Millisecond,
 		Exclusive: true,
 		Frames: []Frame{
 			func() Frame {
@@ -204,12 +246,13 @@ func TestWrite_Metadata_FormatsLoopAndExclusive(t *testing.T) {
 	require.NoError(t, Write(show, &buf))
 	out := buf.String()
 
-	require.True(t, strings.HasPrefix(out, "# name=Hello\n# loop=true\n# exclusive=true\nOLA Show\n"))
+	require.True(t, strings.HasPrefix(out, "# name=Hello\n# loop=true\n# duration=400ms\n# exclusive=true\nOLA Show\n"))
 
 	got, err := Read(strings.NewReader(out), nil)
 	require.NoError(t, err)
 	require.Equal(t, "Hello", got.Name)
 	require.Equal(t, -1, got.Loop)
+	require.Equal(t, 400*time.Millisecond, got.Duration)
 	require.True(t, got.Exclusive)
 	require.Len(t, got.Frames, 1)
 }
@@ -235,6 +278,31 @@ func TestWrite_Metadata_LoopInt(t *testing.T) {
 	out := buf.String()
 
 	require.Contains(t, out, "# loop=5\n")
+	require.Contains(t, out, "OLA Show\n")
+	require.NotContains(t, out, "# duration=")
+}
+
+func TestWrite_Metadata_Duration(t *testing.T) {
+	show := &OlaShow{
+		Name:     "X",
+		Duration: 400 * time.Millisecond,
+		Frames: []Frame{
+			func() Frame {
+				var f Frame
+				f.Universe = 1
+				f.Length = 1
+				f.Data[0] = 7
+				f.Delay = 0
+				return f
+			}(),
+		},
+	}
+
+	var buf bytes.Buffer
+	require.NoError(t, Write(show, &buf))
+	out := buf.String()
+
+	require.Contains(t, out, "# duration=400ms\n")
 	require.Contains(t, out, "OLA Show\n")
 }
 
@@ -343,6 +411,7 @@ func TestRead_SidecarMetadata_Applies(t *testing.T) {
 	meta := strings.Join([]string{
 		"name=FromMeta",
 		"loop=true",
+		"duration=400ms",
 		"exclusive=true",
 	}, "\n")
 
@@ -355,6 +424,7 @@ func TestRead_SidecarMetadata_Applies(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "FromMeta", s.Name)
 	require.Equal(t, -1, s.Loop)
+	require.Equal(t, 400*time.Millisecond, s.Duration)
 	require.True(t, s.Exclusive)
 }
 
@@ -362,6 +432,7 @@ func TestRead_SidecarMetadata_BothFails(t *testing.T) {
 	root := strings.Join([]string{
 		"# name=Inline",
 		"# loop=3",
+		"# duration=400ms",
 		"# exclusive=false",
 		"OLA Show",
 		"1 9",
@@ -371,6 +442,7 @@ func TestRead_SidecarMetadata_BothFails(t *testing.T) {
 	meta := strings.Join([]string{
 		"name=FromMeta",
 		"loop=true",
+		"duration=250ms",
 		"exclusive=true",
 	}, "\n")
 

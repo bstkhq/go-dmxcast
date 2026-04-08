@@ -16,6 +16,8 @@ var (
 	ErrBadHeader = errors.New(`invalid header: expected "OLA Show"`)
 )
 
+const DefaultImplicitFrameDelay = time.Second / 44
+
 // Frame is a DMX snapshot for a universe plus the delay to the next frame.
 type Frame struct {
 	Universe uint16
@@ -33,6 +35,9 @@ type OlaShow struct {
 	//    0  play once (default)
 	//   >0  repeat the given number of times
 	Loop int
+	// Duration is the total amount of time the show should keep looping.
+	// When > 0, it overrides Loop count-based repetition.
+	Duration time.Duration
 	// Exclusive indicates the show requests exclusive control while playing.
 	Exclusive bool
 	// Frames is the sequence of DMX snapshots that make up the show.
@@ -115,7 +120,7 @@ func Read(r io.Reader, resolver FileResolver) (*OlaShow, error) {
 	}
 
 	if expectDelay {
-		pending.Delay = 0
+		pending.Delay = DefaultImplicitFrameDelay
 		show.Frames = append(show.Frames, pending)
 	}
 
@@ -167,6 +172,12 @@ func Write(show *OlaShow, w io.Writer) error {
 		}
 	} else if show.Loop != 0 {
 		if _, err := fmt.Fprintf(bw, "# loop=%d\n", show.Loop); err != nil {
+			return err
+		}
+	}
+
+	if show.Duration > 0 {
+		if _, err := fmt.Fprintf(bw, "# duration=%s\n", show.Duration); err != nil {
 			return err
 		}
 	}
@@ -328,11 +339,23 @@ func parseMetaLine(show *OlaShow, line string, includes *[]string) error {
 			}
 			return nil
 		}
+
 		n, err := strconv.Atoi(v)
 		if err != nil {
 			return fmt.Errorf("invalid loop value %q", v)
 		}
 		show.Loop = n
+		return nil
+
+	case "duration":
+		d, err := time.ParseDuration(v)
+		if err != nil {
+			return fmt.Errorf("invalid duration value %q", v)
+		}
+		if d < 0 {
+			return fmt.Errorf("invalid duration value %q", v)
+		}
+		show.Duration = d
 		return nil
 
 	case "exclusive":
