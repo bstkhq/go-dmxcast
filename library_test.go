@@ -3,6 +3,7 @@ package dmxcast
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 	"time"
 
@@ -14,34 +15,11 @@ func writeShowFile(t *testing.T, dir, name string, dmx0 byte, delayMs int) strin
 
 	path := filepath.Join(dir, name)
 	content := "OLA Show\n" +
-		"1 " + itoa(int(dmx0)) + "\n" +
-		itoa(delayMs) + "\n"
+		"1 " + strconv.Itoa(int(dmx0)) + "\n" +
+		strconv.Itoa(delayMs) + "\n"
 
 	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
 	return path
-}
-
-func itoa(n int) string {
-	if n == 0 {
-		return "0"
-	}
-	neg := false
-	if n < 0 {
-		neg = true
-		n = -n
-	}
-	var buf [32]byte
-	i := len(buf)
-	for n > 0 {
-		i--
-		buf[i] = byte('0' + (n % 10))
-		n /= 10
-	}
-	if neg {
-		i--
-		buf[i] = '-'
-	}
-	return string(buf[i:])
 }
 
 func newTestPlayer(t *testing.T) *Player {
