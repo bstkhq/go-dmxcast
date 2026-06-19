@@ -50,6 +50,8 @@ type LibraryEventType int
 const (
 	// LibraryStateChanged is emitted when the running set changes.
 	LibraryStateChanged LibraryEventType = iota
+	// LibraryShowChanged is emitted when a show changes.
+	LibraryShowChanged
 )
 
 // LibraryEventReason explains why the state changed.
@@ -303,7 +305,7 @@ func (l *Library) loadAll() error {
 
 		if l.cfg.OnEvent != nil {
 			l.cfg.OnEvent(LibraryEvent{
-				Type:   LibraryStateChanged,
+				Type:   LibraryShowChanged,
 				At:     time.Now(),
 				Reason: LoadLibraryEvent,
 				Show:   &si,
