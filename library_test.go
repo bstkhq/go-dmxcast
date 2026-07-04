@@ -143,12 +143,23 @@ func TestLibrary_Events_OnEvent_PlayStopFinishedRestartStopAll(t *testing.T) {
 	lib, err := NewLibrary(player, cfg)
 	require.NoError(t, err)
 
+	// ---- load shows ----
+	require.Eventually(t, func() bool {
+		count := 0
+		for _, ev := range events {
+			if ev.Reason == LoadLibraryEvent {
+				count += 1
+			}
+		}
+		return count == 2
+	}, 100*time.Millisecond, 1*time.Millisecond)
+
 	// ---- play show 1 (should emit play, later finished) ----
 	_, err = lib.Play(1)
 	require.NoError(t, err)
 
 	require.Eventually(t, func() bool {
-		return len(events) >= 1 && events[0].Reason == PlayLibraryEvent
+		return len(events) >= 1 && events[2].Reason == PlayLibraryEvent
 	}, 300*time.Millisecond, 1*time.Millisecond)
 
 	require.Eventually(t, func() bool {
