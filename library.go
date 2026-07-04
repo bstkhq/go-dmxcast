@@ -50,12 +50,16 @@ type LibraryEventType int
 const (
 	// LibraryStateChanged is emitted when the running set changes.
 	LibraryStateChanged LibraryEventType = iota
+	// LibraryShowChanged is emitted when a show changes.
+	LibraryShowChanged
 )
 
 // LibraryEventReason explains why the state changed.
 type LibraryEventReason string
 
 const (
+	// LoadLibraryEvent a show was loaded
+	LoadLibraryEvent LibraryEventReason = "load"
 	// PlayLibraryEvent a show started
 	PlayLibraryEvent LibraryEventReason = "play"
 	// RestartLibraryEvent a show was restarted
@@ -297,6 +301,15 @@ func (l *Library) loadAll() error {
 			FileName: r.fileName,
 			OlaShow:  *r.show,
 			path:     r.path,
+		}
+
+		if l.cfg.OnEvent != nil {
+			l.cfg.OnEvent(LibraryEvent{
+				Type:   LibraryShowChanged,
+				At:     time.Now(),
+				Reason: LoadLibraryEvent,
+				Show:   &si,
+			})
 		}
 
 		l.showsByID[r.id] = si

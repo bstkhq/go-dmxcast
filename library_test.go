@@ -3,6 +3,7 @@ package dmxcast
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 	"time"
 
@@ -14,34 +15,11 @@ func writeShowFile(t *testing.T, dir, name string, dmx0 byte, delayMs int) strin
 
 	path := filepath.Join(dir, name)
 	content := "OLA Show\n" +
-		"1 " + itoa(int(dmx0)) + "\n" +
-		itoa(delayMs) + "\n"
+		"1 " + strconv.Itoa(int(dmx0)) + "\n" +
+		strconv.Itoa(delayMs) + "\n"
 
 	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
 	return path
-}
-
-func itoa(n int) string {
-	if n == 0 {
-		return "0"
-	}
-	neg := false
-	if n < 0 {
-		neg = true
-		n = -n
-	}
-	var buf [32]byte
-	i := len(buf)
-	for n > 0 {
-		i--
-		buf[i] = byte('0' + (n % 10))
-		n /= 10
-	}
-	if neg {
-		i--
-		buf[i] = '-'
-	}
-	return string(buf[i:])
 }
 
 func newTestPlayer(t *testing.T) *Player {
@@ -165,12 +143,23 @@ func TestLibrary_Events_OnEvent_PlayStopFinishedRestartStopAll(t *testing.T) {
 	lib, err := NewLibrary(player, cfg)
 	require.NoError(t, err)
 
+	// ---- load shows ----
+	require.Eventually(t, func() bool {
+		count := 0
+		for _, ev := range events {
+			if ev.Reason == LoadLibraryEvent {
+				count += 1
+			}
+		}
+		return count == 2
+	}, 100*time.Millisecond, 1*time.Millisecond)
+
 	// ---- play show 1 (should emit play, later finished) ----
 	_, err = lib.Play(1)
 	require.NoError(t, err)
 
 	require.Eventually(t, func() bool {
-		return len(events) >= 1 && events[0].Reason == PlayLibraryEvent
+		return len(events) >= 1 && events[2].Reason == PlayLibraryEvent
 	}, 300*time.Millisecond, 1*time.Millisecond)
 
 	require.Eventually(t, func() bool {
