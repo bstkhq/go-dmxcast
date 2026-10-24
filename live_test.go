@@ -1,7 +1,10 @@
 package dmxcast
 
 import (
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 )
@@ -36,4 +39,40 @@ func TestUniverse_LatestLiveWinsASharedChannel(t *testing.T) {
 	require.Equal(t, byte(2), u.Merge()[3])
 	u.ApplyLive(1, 7, a, hold)
 	require.Equal(t, byte(1), u.Merge()[3])
+}
+
+func TestLive_ConcurrentSendsKeepTheLatestFrame(t *testing.T) {
+	p := NewPlayer(&mockTransport{}, &PlayerConfig{Mode: MergeHTP, FlushInterval: time.Millisecond})
+	defer p.Close()
+	l := p.Live()
+	seq := func() uint64 { return atomic.LoadUint64(&p.mergeSeq) }
+
+	var dmx [512]byte
+	var hold [512]bool
+	hold[0] = true
+
+	// a first frame takes its sequence and waits for the universe
+	p.u.mu.Lock()
+	locked := true
+	defer func() {
+		if locked {
+			p.u.mu.Unlock()
+		}
+	}()
+	var wg sync.WaitGroup
+	wg.Go(func() { l.Send(dmx, hold) })
+	require.Eventually(t, func() bool { return seq() == 1 }, time.Second, time.Millisecond)
+
+	// a second one, sent meanwhile, waits for it before taking its own
+	wg.Go(func() { l.Send(dmx, hold) })
+	time.Sleep(20 * time.Millisecond)
+	require.Equal(t, uint64(1), seq(), "a frame takes no sequence while an older one is on its way")
+
+	p.u.mu.Unlock()
+	locked = false
+	wg.Wait()
+	p.u.mu.Lock()
+	stored := p.u.live[l.id].seq
+	p.u.mu.Unlock()
+	require.Equal(t, uint64(2), stored, "the frame stored is the latest")
 }
