@@ -126,15 +126,11 @@ func TestRecorder_ArtNet_RecordVsOriginal(t *testing.T) {
 	flush := 200 * time.Millisecond
 	want := []byte{10, 20, 30}
 
-	l, err := NewArtNetListener(ArtNetListenerConfig{
-		BindIP: net.ParseIP("127.0.0.1"),
-	})
-
-	if err != nil {
-		t.Skipf("cannot bind Art-Net UDP/6454 on 127.0.0.1: %v", err)
-		return
-	}
-
+	// the sockets take free loopback ports, so that the test does not need
+	// UDP/6454, which an Art-Net node on the machine may hold
+	rx, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1")})
+	require.NoError(t, err)
+	l := &ArtNetListener{conn: rx, buf: make([]byte, 1500)}
 	defer l.Close()
 
 	rec := NewRecorder(l)
@@ -148,13 +144,9 @@ func TestRecorder_ArtNet_RecordVsOriginal(t *testing.T) {
 
 	time.Sleep(30 * time.Millisecond)
 
-	tx, err := NewArtNetTransport(&ArtNetConfig{
-		DstIP:  net.ParseIP("127.0.0.1"),
-		SrcIP:  nil,
-		Net:    0,
-		SubUni: 1,
-	})
+	txConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1")})
 	require.NoError(t, err)
+	tx := newArtNetTransportConn(&ArtNetConfig{DstIP: net.ParseIP("127.0.0.1"), Net: 0, SubUni: 1}, txConn, rx.LocalAddr().(*net.UDPAddr))
 	defer tx.Close()
 
 	player := NewPlayer(tx, &PlayerConfig{
