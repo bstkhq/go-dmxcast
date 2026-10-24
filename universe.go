@@ -1,6 +1,10 @@
 package dmxcast
 
-import "sync"
+import (
+	"cmp"
+	"slices"
+	"sync"
+)
 
 // Universe stores the latest DMX buffer per source and can merge them on demand.
 type Universe struct {
@@ -9,6 +13,14 @@ type Universe struct {
 
 	// showID -> last known state
 	sources map[uint64]*universeSource
+	// liveID -> channels a program holds, merged over the shows
+	live map[uint64]*liveSource
+}
+
+type liveSource struct {
+	dmx  [512]byte
+	hold [512]bool
+	seq  uint64
 }
 
 type universeSource struct {
@@ -21,6 +33,7 @@ func NewUniverse(mode MergeMode) *Universe {
 	return &Universe{
 		mode:    mode,
 		sources: make(map[uint64]*universeSource),
+		live:    make(map[uint64]*liveSource),
 	}
 }
 
@@ -59,17 +72,52 @@ func (u *Universe) Remove(showID uint64) {
 	u.mu.Unlock()
 }
 
-// Merge returns the merged DMX snapshot for the current sources.
+// ApplyLive stores what a live source sends: the channels it holds and their
+// values. seq orders live sources between themselves, the latest winning a
+// channel two of them hold.
+func (u *Universe) ApplyLive(liveID uint64, seq uint64, dmx [512]byte, hold [512]bool) {
+	u.mu.Lock()
+	u.live[liveID] = &liveSource{dmx: dmx, hold: hold, seq: seq}
+	u.mu.Unlock()
+}
+
+// RemoveLive releases every channel of a live source.
+func (u *Universe) RemoveLive(liveID uint64) {
+	u.mu.Lock()
+	delete(u.live, liveID)
+	u.mu.Unlock()
+}
+
+// Merge returns the merged DMX snapshot for the current sources: the shows
+// merged by the universe's mode, then every channel a live source holds set
+// to its value.
 func (u *Universe) Merge() [512]byte {
 	u.mu.Lock()
-	mode := u.mode
-
 	tmp := make([]universeSource, 0, len(u.sources))
 	for _, s := range u.sources {
 		tmp = append(tmp, *s)
 	}
+	live := make([]liveSource, 0, len(u.live))
+	for _, l := range u.live {
+		live = append(live, *l)
+	}
+	mode := u.mode
 	u.mu.Unlock()
 
+	out := mergeShows(mode, tmp)
+	slices.SortFunc(live, func(a, b liveSource) int { return cmp.Compare(a.seq, b.seq) })
+	for _, l := range live {
+		for i := range 512 {
+			if l.hold[i] {
+				out[i] = l.dmx[i]
+			}
+		}
+	}
+
+	return out
+}
+
+func mergeShows(mode MergeMode, tmp []universeSource) [512]byte {
 	var out [512]byte
 
 	switch mode {

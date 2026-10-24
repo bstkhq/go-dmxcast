@@ -3,7 +3,9 @@ package dmxcast
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
+	"sync"
 	"testing"
 	"time"
 
@@ -134,9 +136,18 @@ func TestLibrary_Events_OnEvent_PlayStopFinishedRestartStopAll(t *testing.T) {
 			"50\n",
 	), 0o644))
 
-	var events []LibraryEvent
+	// the library reports its events from the players' goroutines
+	var mu sync.Mutex
+	var recorded []LibraryEvent
 	cfg.OnEvent = func(ev LibraryEvent) {
-		events = append(events, ev)
+		mu.Lock()
+		defer mu.Unlock()
+		recorded = append(recorded, ev)
+	}
+	events := func() []LibraryEvent {
+		mu.Lock()
+		defer mu.Unlock()
+		return slices.Clone(recorded)
 	}
 
 	player := newTestPlayer(t)
@@ -146,7 +157,7 @@ func TestLibrary_Events_OnEvent_PlayStopFinishedRestartStopAll(t *testing.T) {
 	// ---- load shows ----
 	require.Eventually(t, func() bool {
 		count := 0
-		for _, ev := range events {
+		for _, ev := range events() {
 			if ev.Reason == LoadLibraryEvent {
 				count += 1
 			}
@@ -159,11 +170,12 @@ func TestLibrary_Events_OnEvent_PlayStopFinishedRestartStopAll(t *testing.T) {
 	require.NoError(t, err)
 
 	require.Eventually(t, func() bool {
-		return len(events) >= 1 && events[2].Reason == PlayLibraryEvent
+		evs := events()
+		return len(evs) >= 3 && evs[2].Reason == PlayLibraryEvent
 	}, 300*time.Millisecond, 1*time.Millisecond)
 
 	require.Eventually(t, func() bool {
-		for _, ev := range events {
+		for _, ev := range events() {
 			if ev.Reason == FinishedLibraryEvent {
 				return true
 			}
@@ -176,7 +188,7 @@ func TestLibrary_Events_OnEvent_PlayStopFinishedRestartStopAll(t *testing.T) {
 	require.NoError(t, err)
 
 	require.Eventually(t, func() bool {
-		for _, ev := range events {
+		for _, ev := range events() {
 			if ev.Reason == PlayLibraryEvent {
 				for _, p := range ev.Running {
 					if p.ShowID == 2 {
@@ -195,7 +207,7 @@ func TestLibrary_Events_OnEvent_PlayStopFinishedRestartStopAll(t *testing.T) {
 	require.Eventually(t, func() bool {
 		hasRestart := false
 		hasPlayAfter := false
-		for _, ev := range events {
+		for _, ev := range events() {
 			if ev.Reason == RestartLibraryEvent {
 				hasRestart = true
 			}
@@ -211,7 +223,7 @@ func TestLibrary_Events_OnEvent_PlayStopFinishedRestartStopAll(t *testing.T) {
 	require.True(t, was)
 
 	require.Eventually(t, func() bool {
-		for _, ev := range events {
+		for _, ev := range events() {
 			if ev.Reason == StopLibraryEvent {
 				return true
 			}
@@ -233,7 +245,7 @@ func TestLibrary_Events_OnEvent_PlayStopFinishedRestartStopAll(t *testing.T) {
 	lib.StopAll()
 
 	require.Eventually(t, func() bool {
-		for _, ev := range events {
+		for _, ev := range events() {
 			if ev.Reason == StopAllLibraryEvent {
 				return true
 			}
